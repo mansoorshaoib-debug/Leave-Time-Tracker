@@ -49,6 +49,7 @@ const CONFIG = {
   LONG_SESSION_MINUTES: 10 * 60,             // is se lamba ek session = shayad check out bhool gaya
 
   RESYNC_DAYS: 3,                            // har sync par pichle itne din dobara check (edits/deletes)
+  QUICK_SYNC_DAYS: 1,                        // Slack message aate hi "quick sync" sirf itne din ka data laati hai
   INITIAL_SYNC_DAYS: 30,                     // pehli dafa kitne din ka data laye
 };
 
@@ -129,24 +130,68 @@ function fullResync() {
 }
 
 /************************ MAIN SYNC ************************/
-function syncNow() {
+/** Poori sync (har 15 minute + menu). Backup: koi message miss na ho, edits/deletes bhi pakre. */
+function syncNow() { syncWindow_(0); }
+
+/** days = 0: normal sync (pichle RESYNC_DAYS din) · days > 0: quick sync (sirf itne din) */
+function syncWindow_(days) {
   const lock = LockService.getScriptLock();
-  if (!lock.tryLock(30000)) return;
+  if (!lock.tryLock(30000)) { if (days) scheduleQuickSync_(); return; }
   try {
     const props = PropertiesService.getScriptProperties();
     const last = Number(props.getProperty('LAST_SYNC_MS') || 0);
     const now = Date.now();
-    const days = last ? CONFIG.RESYNC_DAYS : CONFIG.INITIAL_SYNC_DAYS;
-    const oldestMs = Math.min(last || now, now) - days * 86400000;
+    const oldestMs = days ? now - days * 86400000
+      : Math.min(last || now, now) - (last ? CONFIG.RESYNC_DAYS : CONFIG.INITIAL_SYNC_DAYS) * 86400000;
 
     ensureAllSheets_(ss_());
     const messages = fetchSlackMessages_(oldestMs / 1000);
     upsertRawLog_(messages, oldestMs);
     recalculateOnly();
-    props.setProperty('LAST_SYNC_MS', String(now));
+    if (!days) props.setProperty('LAST_SYNC_MS', String(now));
   } finally {
     lock.releaseLock();
   }
+}
+
+/************************ SLACK EVENTS (message aate hi update) ************************
+ *  Slack App > Event Subscriptions > Request URL = is web app ka /exec link
+ *  Subscribe to bot events: message.channels (+ message.groups agar channel private ho)
+ *  Slack ko 3 second mein jawab dena hota hai, is liye yahan sirf ~1 minute baad ki
+ *  "quickSync" schedule hoti hai; asal kaam woh karti hai.
+ *  (optional) Script Properties: SLACK_VERIFICATION_TOKEN = Slack App > Basic Information > Verification Token
+ ***************************************************************************************/
+function handleSlackEvent_(body) {
+  const out = t => ContentService.createTextOutput(t);
+  const vt = PropertiesService.getScriptProperties().getProperty('SLACK_VERIFICATION_TOKEN');
+  if (vt && body.token !== vt) return out('forbidden');
+  if (body.type === 'url_verification') return out(String(body.challenge || ''));
+  if (body.type !== 'event_callback') return out('ok');
+  const ev = body.event || {};
+  if (ev.channel !== CONFIG.CHANNEL_ID) return out('ok');
+  const cache = CacheService.getScriptCache();
+  if (body.event_id) {                                   // Slack retry -> dobara kaam nahi
+    if (cache.get('ev_' + body.event_id)) return out('ok');
+    cache.put('ev_' + body.event_id, '1', 21600);
+  }
+  scheduleQuickSync_();
+  return out('ok');
+}
+
+function scheduleQuickSync_() {
+  const cache = CacheService.getScriptCache();
+  if (cache.get('QUICK_SCHEDULED')) return;              // pehle se schedule hai
+  cache.put('QUICK_SCHEDULED', '1', 180);
+  ScriptApp.newTrigger('quickSync').timeBased().after(1000).create();
+}
+
+/** Slack event ke ~1 minute baad chalti hai */
+function quickSync() {
+  ScriptApp.getProjectTriggers().forEach(t => {
+    if (t.getHandlerFunction() === 'quickSync') ScriptApp.deleteTrigger(t);
+  });
+  CacheService.getScriptCache().remove('QUICK_SCHEDULED');
+  syncWindow_(CONFIG.QUICK_SYNC_DAYS);
 }
 
 function recalculateOnly() {

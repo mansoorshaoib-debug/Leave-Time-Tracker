@@ -302,7 +302,37 @@ function login(){
     const res = await api({ action:"login", id, pass });
     if(!res.ok) return ($("result").innerHTML = notice(res.error || "Login failed"));
     showEmployee(res.employee);
+    startAutoRefresh(id, pass, res.employee);
   });
+}
+
+/* ---------- Auto refresh: har minute check, naya Slack data aaye to screen update ----------
+   (Slack message -> ~1 minute mein Sheet -> ~1 minute mein yahan) */
+const REFRESH_MS = 60 * 1000;
+let session = null;
+const sigOf = e => JSON.stringify([e.attendance, e.overtime, e.leaves, e.extraLeaves, e.extraManual]);
+function startAutoRefresh(id, pass, emp){
+  const first = !session;
+  session = { id, pass, sig: sigOf(emp) };          // sirf memory mein, kahin save nahi hota
+  if(!first) return;
+  setInterval(refreshEmployee, REFRESH_MS);
+  document.addEventListener("visibilitychange", () => { if(!document.hidden) refreshEmployee(); });
+}
+async function refreshEmployee(){
+  if(!session || document.hidden || session.busy) return;
+  session.busy = true;
+  try{
+    const res = await api({ action:"login", id: session.id, pass: session.pass });
+    if(!res.ok || !res.employee) return;
+    const sig = sigOf(res.employee);
+    if(sig === session.sig) return;                  // kuch naya nahi
+    session.sig = sig;
+    const tabs = ["mainNav", "hrNav", "otSeg", "lvSeg"].map(id => [id, $(id) ? $(id).dataset.active : "0"]);
+    const y = window.scrollY;
+    showEmployee(res.employee);
+    tabs.forEach(([id, i]) => { if(i && i !== "0" && $(id)) $(id).querySelector(`button[data-i="${i}"]`)?.click(); });
+    window.scrollTo(0, y);
+  } finally { session.busy = false; }
 }
 
 function showEmployee(emp){

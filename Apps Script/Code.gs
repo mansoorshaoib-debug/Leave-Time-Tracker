@@ -48,6 +48,10 @@ function doPost(e) {
   let body = {};
   try { body = JSON.parse((e && e.postData && e.postData.contents) || "{}"); } catch (err) {}
   try {
+    // Slack Event Subscriptions (message aate hi update) — Attendance.gs
+    if ((body.type === "url_verification" || body.type === "event_callback") && typeof handleSlackEvent_ === "function") {
+      return handleSlackEvent_(body);
+    }
     if (body.action === "login") return json_(employeeLogin_(body));
     if (body.action === "admin") return json_(adminLogin_(body));
     return json_({ ok: false, error: "Unknown request" });

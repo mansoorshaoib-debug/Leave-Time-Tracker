@@ -12,6 +12,7 @@ GOOGLE SHEET (3 naye tabs, khud ban jate hain; purane tabs waise hi)
 - Overtime Months   (PERMANENT) har mahina: Carried In, Overtime, Short, Total,
                     Extra Leaves, Carried Forward, Status (Running / Final)
 - Earned Leaves     (PERMANENT) har extra leave ki ek row
+- (Slack message aate hi ~1 minute mein update: SETUP mein "FORAN UPDATE" dekhein)
 - Overtime History  sirf aakhri 2 haftay — har sync par purana hafta khud hat jata hai
                     (cleanup SIRF is tab par hoti hai)
 - Raw Log, Daily Summary, Monthly Summary, Issues, Employees, Leaves, Extra Leaves: koi change nahi
@@ -49,3 +50,13 @@ KISI FINAL MAHINE KO DOBARA CALCULATE KARNA HO (bohat kam)
 - "Overtime Months" mein us mahine AUR us ke baad ke saare mahinon ki rows delete karein
 - "Earned Leaves" mein un mahinon ki rows delete karein
 - Menu > "Recalculate only"
+
+FORAN UPDATE (Slack message aate hi ~1 minute mein)
+1) api.slack.com/apps > Attendance Bot > Event Subscriptions > Enable Events: ON
+2) Request URL: website wala Apps Script /exec link  (Verified ✓ aana chahiye)
+3) Subscribe to bot events > Add: message.channels  (private channel ho to message.groups bhi)
+4) Save Changes > upar "reinstall your app" > Allow
+5) (optional, zyada mehfooz) Basic Information > Verification Token copy >
+   Apps Script > Project Settings > Script Properties: SLACK_VERIFICATION_TOKEN = token
+- Website har minute khud naya data check karti hai (refresh ki zaroorat nahi)
+- 15 minute wali sync backup ke taur par chalti rehti hai
