@@ -1,0 +1,51 @@
+OTHTECH Leave Portal — Working Hours + Overtime Update
+
+WEBSITE
+- 2 sections: "Leaves" aur "Working Hours"
+- Working Hours: Daily / Weekly / Monthly / Overtime
+- Overtime:
+    * Balance card (agli extra leave tak kitna overtime baqi)
+    * "Overtime history": sirf is hafte + pichle hafte, din-ba-din + Week total
+    * "Earned leaves": har extra leave ki alag entry (date, 8h used, month) — permanent
+
+GOOGLE SHEET (3 naye tabs, khud ban jate hain; purane tabs waise hi)
+- Overtime Months   (PERMANENT) har mahina: Carried In, Overtime, Short, Total,
+                    Extra Leaves, Carried Forward, Status (Running / Final)
+- Earned Leaves     (PERMANENT) har extra leave ki ek row
+- Overtime History  sirf aakhri 2 haftay — har sync par purana hafta khud hat jata hai
+                    (cleanup SIRF is tab par hoti hai)
+- Raw Log, Daily Summary, Monthly Summary, Issues, Employees, Leaves, Extra Leaves: koi change nahi
+
+HISAAB
+- Worked = check in se check out. Break nahi ginta, namaz kaam mein ginti hai
+  (9h office = 8h kaam + 1h break)
+- Required = 8h har Mon–Sat poora din (Sunday off: saara kaam overtime)
+- Balance = Carried in + Overtime − Short
+- Jis din balance 8h ho: 1 extra leave, 8h minus. Baqi aage (agle mahine bhi).
+  Misal: 11h -> 1 leave + 3h aage
+- Mahina khatam hone ke 3 din baad (SETTLE_GRACE_DAYS) mahina "Final" ho kar lock.
+  Final mahine aur us ki leaves script kabhi nahi badalti. Agla mahina Final
+  "Carried Forward" se shuru hota hai, is liye balance kabhi reset nahi hota.
+- Safety: agar kisi sync mein koi Final row badalne lage to script ruk jati hai, kuch nahi likhti.
+
+LAGANE KA TAREEQA
+1) VERY IMPORTANT — pehli dafa chalane se pehle:
+   Agar purane mahinon ka poora data chahiye to Attendance.gs mein INITIAL_SYNC_DAYS
+   barha dein (misal 90) aur menu "⏱ Attendance" > "Full resync" chalayein.
+   (Kyun ke closed mahine pehli run par hi lock ho jate hain.)
+2) Google Sheet > Extensions > Apps Script
+   - "Code.gs" ka saara code is folder ke "Apps Script/Code.gs" se replace karein
+   - "Attendance" file ka saara code "Apps Script/Attendance.gs" se replace karein
+   - Save, phir menu "⏱ Attendance" > "Recalculate only"  (3 naye tabs ban jayenge)
+   - Deploy > Manage deployments > Edit > Version: New version > Deploy (link wahi)
+3) "Website" folder Netlify par upload karein
+
+SETTINGS (dono jagah same rakhein)
+- Attendance.gs CONFIG: OVERTIME_PER_LEAVE_MINUTES, SHORT_REDUCES_OVERTIME,
+                        OVERTIME_HISTORY_WEEKS, SETTLE_GRACE_DAYS, WEEKLY_OFF_DAYS
+- sript.js ATT:         PER_LEAVE, SHORT_REDUCES_OVERTIME, OFF_DAYS
+
+KISI FINAL MAHINE KO DOBARA CALCULATE KARNA HO (bohat kam)
+- "Overtime Months" mein us mahine AUR us ke baad ke saare mahinon ki rows delete karein
+- "Earned Leaves" mein un mahinon ki rows delete karein
+- Menu > "Recalculate only"

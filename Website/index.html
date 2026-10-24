@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>OTHTECH Leave Portal</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#05060f">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div class="lock-clock">
+  <div class="date">&nbsp;</div>
+  <div class="time">--:--</div>
+</div>
+
+<div class="card">
+
+  <div class="login-only">
+    <div class="logo">
+      <div class="app-icon"><span>OT</span></div>
+      <span class="eyebrow">Software House</span>
+      <h2>OTHTECH</h2>
+      <p class="tagline">Annual Leave Tracker</p>
+    </div>
+
+    <div class="field-group">
+      <div class="field">
+        <svg class="lead" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg>
+        <label class="field-label" for="empId">Employee ID</label>
+        <input type="text" id="empId" placeholder="User name" autocomplete="username" onkeydown="if(event.key==='Enter') login()">
+      </div>
+      <div class="field">
+        <svg class="lead" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><rect x="4" y="10" width="16" height="11" rx="3"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
+        <label class="field-label" for="code">Password</label>
+        <input type="password" id="code" placeholder="Password" autocomplete="current-password" onkeydown="if(event.key==='Enter') login()">
+        <span id="togglePass" onclick="togglePassword()" role="button" aria-label="Show password"></span>
+      </div>
+    </div>
+
+    <button class="primary" onclick="login()">Log In</button>
+    <a href="admin.html" class="admin-link">Admin Panel</a>
+  </div>
+
+  <div id="result" class="box"></div>
+
+</div>
+
+<script src="sript.js"></script>
+</body>
+</html>
