@@ -6,7 +6,7 @@
    - Two sections: Leaves · Working Hours (Daily / Weekly / Monthly)
    ========================================================= */
 
-const API_URL = "https://script.google.com/macros/s/AKfycbykRpRmCBl_Zj3vR5nHrD9bGRT74K9VK0lmAS1o8yHYgV92eaJ3a_pUaNajK9apDUvdJA/exec";
+const API_URL = "https://script.google.com/macros/s/AKfycbx-whgnAdu_84LhUL879oUYJ0q5grGgHSHreq4UCMnrCvWmvApuBcU_MRdSV5URX3513Q/exec";
 const ANNUAL_LEAVES = 10;
 
 let data = {};      // admin: sab employees (passwords ke baghair)
