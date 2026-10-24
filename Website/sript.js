@@ -184,7 +184,8 @@ const I = {
     const tick = () => {
       const n = new Date();
       clock.querySelector(".date").textContent = n.toLocaleDateString("en-GB", { weekday:"long", day:"numeric", month:"long" });
-      clock.querySelector(".time").textContent = n.toLocaleTimeString("en-GB", { hour:"2-digit", minute:"2-digit" });
+      const h = n.getHours() % 12 || 12, mm = String(n.getMinutes()).padStart(2, "0");      // 12 ghante wali ghari
+      clock.querySelector(".time").innerHTML = `${h}:${mm}<span class="ampm">${n.getHours() < 12 ? "AM" : "PM"}</span>`;
     };
     tick(); setInterval(tick, 1000);
   }
@@ -525,10 +526,10 @@ function runMonth(carryIn, days){
 }
 
 const KIND = {
-  done: "Completed", offWorked: "Sunday · Worked", live: "In progress", incomplete: "No check-out",
+  done: "Completed", half: "Half day", offWorked: "Sunday · Worked", live: "In progress", incomplete: "No check-out",
   leave: "Leave", off: "Weekly off", absent: "No check-in", notyet: "Not checked in", upcoming: "", nodata: ""
 };
-const LIVE_TEXT = { "Working now": "Working", "On break": "On break", "At namaz": "At namaz" };
+const LIVE_TEXT = { "Working now": "Working", "On break": "On break", "At namaz": "At namaz", "Half day": "Half day (checked out)" };
 
 /* Ek din ka record banao (attendance, leave, off, absent…) */
 function makeDay(d, r, leave, flags){
@@ -541,10 +542,11 @@ function makeDay(d, r, leave, flags){
     if(r.final){
       day.final = true;
       if(!day.preStart){ day.ot = r.ot; day.short = r.short; day.net = r.ot - r.short; }   // start se pehle: 0
-      day.kind = off ? "offWorked" : "done";
+      day.halfDay = !!r.halfDay; day.relief = day.preStart ? 0 : num(r.relief);
+      day.kind = off ? "offWorked" : day.halfDay ? "half" : "done";
       if(/final check out/i.test(r.status || "")) day.note = "Last check-out was for a break";
     } else if(flags.today){
-      day.kind = "live";
+      day.kind = "live"; day.halfDay = !!r.halfDay;
       day.liveStatus = LIVE_TEXT[r.status] || r.status || "In progress";
       if(r.openSince && r.status === "Working now"){
         const extra = (Date.now() - r.openSince) / 60000;            // abhi chal raha session
@@ -567,12 +569,13 @@ function makeDay(d, r, leave, flags){
 
 /* Sirf poore (final) din gine jate hain — is liye Worked − Required = Overtime − Short hamesha */
 function totals(days){
-  const t = { required: 0, work: 0, brk: 0, namaz: 0, ot: 0, short: 0, worked: 0, absent: 0, leave: 0, offWorked: 0, incomplete: 0, pre: 0 };
+  const t = { required: 0, work: 0, brk: 0, namaz: 0, ot: 0, short: 0, worked: 0, absent: 0, leave: 0, offWorked: 0, incomplete: 0, pre: 0, half: 0, relief: 0 };
   days.forEach(x => {
     if(x.final){
       t.required += x.required; t.work += x.work; t.brk += x.brk; t.namaz += x.namaz;
       t.ot += x.ot; t.short += x.short; t.worked++;
       if(x.preStart) t.pre++;
+      if(x.halfDay){ t.half++; t.relief += x.relief || 0; }
     }
     if(x.kind === "absent") t.absent++;
     if(x.kind === "leave") t.leave++;
@@ -659,6 +662,7 @@ function dayAt(m, d){
 function sumPanel(t){
   const extra = [
     t.pre ? `${t.pre} before ${otStartLabel()} (overtime not counted)` : "",
+    t.half ? `<span class="pos">Half day relief: ${t.half} day${t.half > 1 ? "s" : ""}</span>` : "",
     t.leave ? `${t.leave} leave` : "",
     t.incomplete ? `<span class="neg">${t.incomplete} day${t.incomplete > 1 ? "s" : ""} not counted (no check-out)</span>` : ""
   ].filter(Boolean).join(" · ");
@@ -718,6 +722,7 @@ function rightPart(day){
     ? `<span class="anet">${fmtMin(day.remaining)} left</span>`
     : `<span class="anet pos">+${fmtMin(day.extraNow)}</span>`;
   if(day.final && day.preStart) return `<span class="anet muted">Not counted</span>`;
+  if(day.final && day.halfDay && day.relief) return `<span class="anet pos">Relief</span>`;
   if(day.final) return `<span class="anet ${tone(day.net)}">${day.net ? signed(day.net) : "On target"}</span>`;
   return "";
 }
@@ -731,6 +736,7 @@ function dayRow(day, opts = {}){
     const time = day.firstIn ? `${esc(day.firstIn)} – ${esc(day.lastOut || "…")}` : "";
     sub = [time, day.brk ? `Break ${fmtMin(day.brk)}` : "", day.namaz ? `Namaz ${fmtMin(day.namaz)}` : ""].filter(Boolean).join(" · ");
     if(day.kind === "incomplete") sub += ` · <span class="neg">Not counted</span>`;
+    if(day.halfDay) sub += ` · <span class="pos">Half day — worked ${fmtMin(day.work)}</span>`;
   } else if(day.kind === "leave"){
     main = `<span class="muted-main">Leave</span>`;
     sub = esc(day.leave.reason || "");
@@ -790,9 +796,16 @@ function dayCalc(t){
   if(t.final && t.preStart){
     end = `<div class="hl"><span>Overtime / short time</span><b class="muted">Not counted</b></div>`;
     note = `Overtime and short time are counted from ${otStartLabel()}.`;
+  } else if(t.final && t.halfDay && t.relief){
+    rows.push(`<div><span>Half day relief (short time not counted)</span><b class="pos">+${fmtMin(t.relief)}</b></div>`);
+    end = `<div class="hl"><span>Result</span><b>On target (half day)</b></div>`;
+    note = `Checked out as half day after ${fmtMin(t.work)} of work. The missing ${fmtMin(t.relief)} is not counted as short time.`;
   } else if(t.final){
     end = `<div class="hl"><span>${t.net > 0 ? "Overtime" : t.net < 0 ? "Short time" : "Result"}</span><b class="${tone(t.net)}">${t.net ? signed(t.net) : "On target"}</b></div>`;
     if(t.note) note = `${t.note} — the day was closed at that check-out.`;
+  } else if(t.kind === "live" && t.halfDay){
+    end = `<div class="hl"><span>Half day</span><b>Checked out</b></div>`;
+    note = "Checked out as half day. Short time will not be counted for today.";
   } else if(t.kind === "live"){
     end = `<div class="hl"><span>${t.remaining ? "Still needed today" : "Extra so far"}</span><b class="${t.remaining ? "" : "pos"}">${t.remaining ? fmtMin(t.remaining) : "+" + fmtMin(t.extraNow)}</b></div>`;
     note = "Today is still running. Overtime is added after the day ends.";
@@ -861,6 +874,7 @@ function mountWeekly(m, el, openDay){
         <div class="bal">
           ${t.pre ? `<div><span>${t.pre} day${t.pre > 1 ? "s" : ""} before ${otStartLabel()} — not counted</span><b class="muted">—</b></div>`
                   : `<div><span>Worked − Required</span><b>${fmtMin(t.work)} − ${fmtMin(t.required)}</b></div>`}
+          ${t.relief ? `<div><span>Half day relief (${t.half} day${t.half > 1 ? "s" : ""})</span><b class="pos">+${fmtMin(t.relief)}</b></div>` : ""}
           <div class="hl"><span>Overtime this week${ATT.SHORT_REDUCES_OVERTIME ? " (after short time)" : ""}</span><b class="${tone(ATT.SHORT_REDUCES_OVERTIME ? t.net : t.ot)}">${signed(ATT.SHORT_REDUCES_OVERTIME ? t.net : t.ot)}</b></div>
         </div>
       </div>

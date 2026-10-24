@@ -59,9 +59,9 @@ const RAW_HEADERS = ['Slack TS', 'Date', 'Time', 'Employee', 'User ID', 'Message
   'Typed Time Used', 'Manual Type', 'Manual Time', 'Note', 'Posted At', 'Thread TS'];
 const R = { TS: 0, DAY: 1, TIME: 2, NAME: 3, UID: 4, TEXT: 5, DETECTED: 6, TYPED: 7,
   MAN_TYPE: 8, MAN_TIME: 9, NOTE: 10, POSTED: 11, THREAD: 12 };
-const TYPES = ['IN', 'OUT_BREAK', 'OUT_NAMAZ', 'OUT_END', 'IGNORE'];
+const TYPES = ['IN', 'OUT_BREAK', 'OUT_NAMAZ', 'OUT_END', 'OUT_HALFDAY', 'IGNORE'];
 const TYPE_LABEL = { IN: 'Check in', OUT_BREAK: 'Out - Break', OUT_NAMAZ: 'Out - Namaz',
-  OUT_END: 'Out - Day end', IGNORE: 'Ignore', UNREADABLE: '❓ UNREADABLE' };
+  OUT_END: 'Out - Day end', OUT_HALFDAY: 'Out - Half day', IGNORE: 'Ignore', UNREADABLE: '❓ UNREADABLE' };
 
 function ss_() { return SpreadsheetApp.openById(SHEET_ID); }
 
@@ -376,7 +376,15 @@ function writeIssues_(sh, issues) {
   if (toAlert.length) sendAlerts_(toAlert);
 }
 
-function sendAlerts_(issues) {
+function sendAlerts_(all) {
+  const notes = all.filter(i => i.severity === 'NOTICE');
+  const issues = all.filter(i => i.severity !== 'NOTICE');
+  if (notes.length) {
+    const t = ':information_source: *Half day:*\n' + notes.slice(0, 25).map(i =>
+      `• *${i.name}* (${i.day}) — ${i.problem}` + (i.link ? `  <${i.link}|open>` : '')).join('\n');
+    CONFIG.ADMIN_SLACK_IDS.forEach(id => slackPost_('chat.postMessage', { channel: id, text: t }));
+  }
+  if (!issues.length) return;
   const lines = issues.slice(0, 25).map(i =>
     `• *${i.name}* (${i.day}) — ${i.problem}` + (i.text ? `\n    _"${i.text}"_` : '') + (i.link ? `  <${i.link}|open>` : ''));
   const more = issues.length > 25 ? `\n…aur ${issues.length - 25} issues. Sheet mein "Issues" tab dekhein.` : '';
@@ -456,7 +464,8 @@ const WORDS = {
   outTypos: ['ot', 'otu', 'uot', 'outt', 'aut', 'oit', 'iut'],
   inTypos: ['inn', 'ib', 'un'],
   backIn: ['back', 'wapis', 'wapas', 'returned', 'resume', 'resumed'],
-  filler: ['sir', 'ji', 'g', 'for', 'the', 'and', 'to', 'from', 'after', 'am', 'pm', 'time', 'at', 'now',
+  half: ['halfday', 'half', 'halfdays', 'emergency', 'emergancy', 'urgent'],   // "Checkout (Halfday)"
+  filler: ['day', 'sir', 'ji', 'g', 'for', 'the', 'and', 'to', 'from', 'after', 'am', 'pm', 'time', 'at', 'now',
     'done', 'ho', 'hon', 'hn', 'raha', 'rahi', 'hu', 'hoon', 'gaya', 'gya', 'kr', 'ker', 'kar', 'de', 'diya',
     'please', 'pls', 'today', 'aaj', 'aj', 'ok', 'jee', 'mein', 'me', 'my', 'of', 'a', 'is'],
 };
@@ -514,7 +523,7 @@ function parseMessage(text) {
   const tokens = s ? s.split(/\s+/) : [];
 
   let hasCheck = false, hasIn = false, hasOut = false, weakIn = false, weakOutTypo = false, weakInTypo = false;
-  let namaz = false, brk = false, fuzzy = false, unknown = [];
+  let namaz = false, brk = false, half = false, fuzzy = false, unknown = [];
 
   tokens.forEach(t => {
     let used = false;
@@ -530,6 +539,10 @@ function parseMessage(text) {
     if (!used) {
       const c = matchList(t, WORDS.check);
       if (c) { hasCheck = true; used = true; if (c === 'fuzzy') fuzzy = true; }
+    }
+    if (!used) {
+      const hd = matchList(t, WORDS.half);
+      if (hd) { half = true; used = true; if (hd === 'fuzzy') fuzzy = true; }
     }
     if (!used) {
       const n = matchList(t, WORDS.namaz);
@@ -554,7 +567,7 @@ function parseMessage(text) {
   const res = { type: 'UNREADABLE', fuzzy: fuzzy, warn: '', typed: typed };
   if (hasIn && hasOut) { res.warn = 'Message mein "in" aur "out" dono hain'; return res; }
   if (hasOut) {
-    res.type = namaz && brk ? 'OUT_BREAK' : namaz ? 'OUT_NAMAZ' : brk ? 'OUT_BREAK' : 'OUT_END';
+    res.type = half ? 'OUT_HALFDAY' : namaz && brk ? 'OUT_BREAK' : namaz ? 'OUT_NAMAZ' : brk ? 'OUT_BREAK' : 'OUT_END';
     if (namaz && brk) res.warn = 'Namaz aur break dono likha hai — Break maana';
   } else if (hasIn) {
     res.type = 'IN';
@@ -574,7 +587,7 @@ function computeDay(events, dayIsOver, target) {
   if (target === undefined) target = CONFIG.TARGET_WORK_MINUTES;
   events.sort((a, b) => a.ms - b.ms);
   let state = 'NONE', start = 0, lastOut = 0, firstIn = 0, lastEnd = 0;
-  let work = 0, brk = 0, namaz = 0, sessions = 0;
+  let work = 0, brk = 0, namaz = 0, sessions = 0, halfOpen = false;
   const issues = [];
   events.forEach(e => {
     if (e.type === 'IN') {
@@ -584,7 +597,11 @@ function computeDay(events, dayIsOver, target) {
       }
       if (state === 'BREAK') brk += (e.ms - lastOut) / 60000;
       if (state === 'NAMAZ') namaz += (e.ms - lastOut) / 60000;
-      if (state === 'ENDED') issues.push({ sev: 'INFO', problem: 'Day-end check out ke baad dobara check in', ev: e });
+      if (state === 'ENDED') {                // check out ke baad usi din wapas = beech ka waqt BREAK
+        brk += (e.ms - lastOut) / 60000;
+        halfOpen = false;                     // half day ke baad wapas aa gaya -> half day nahi
+        issues.push({ sev: 'INFO', problem: 'Check out ke baad dobara check in — beech ka waqt break mein gina', ev: e });
+      }
       if (!firstIn) firstIn = e.ms;
       start = e.ms; state = 'IN';
     } else {
@@ -597,8 +614,14 @@ function computeDay(events, dayIsOver, target) {
       if (dur > CONFIG.LONG_SESSION_MINUTES) issues.push({ sev: 'WARNING', problem: 'Ek session ' + fmtDur(dur) + ' ka — check karein', ev: e });
       work += dur; sessions++; lastOut = e.ms; lastEnd = e.ms;
       state = e.type === 'OUT_BREAK' ? 'BREAK' : e.type === 'OUT_NAMAZ' ? 'NAMAZ' : 'ENDED';
+      if (e.type === 'OUT_HALFDAY') {
+        halfOpen = true;
+        const sofar = work + (CONFIG.NAMAZ_COUNTS_AS_WORK ? namaz : 0);
+        issues.push({ sev: 'NOTICE', problem: 'Half day check out ' + fmtTime12(e.ms) + ' — ' + fmtDur(sofar) + ' kaam kiya', ev: e });
+      } else if (state === 'ENDED') halfOpen = false;
     }
   });
+  const halfDay = halfOpen && state === 'ENDED';
 
   let status = 'Complete';
   if (state === 'IN') {
@@ -614,11 +637,15 @@ function computeDay(events, dayIsOver, target) {
   } else if (state === 'NONE') {
     status = 'No valid check in';
   }
+  if (halfDay) status = 'Half day';
 
   const counted = work + (CONFIG.NAMAZ_COUNTS_AS_WORK ? namaz : 0);
   const extraBreak = Math.max(0, brk - CONFIG.ALLOWED_BREAK_MINUTES);
   let diff = counted - target - (CONFIG.EXTRA_BREAK_COUNTS_AS_SHORT ? extraBreak : 0);
+  let relief = 0;
+  if (halfDay && diff < 0) { relief = -diff; diff = 0; }   // Half day: short time maaf (relief)
   return {
+    halfDay: halfDay, relief: relief,
     firstIn: firstIn, lastOut: lastEnd, work: counted, brk: brk, namaz: namaz, extraBreak: extraBreak,
     sessions: sessions, overtime: diff > 0 ? diff : 0, short: diff < 0 ? -diff : 0,
     required: target, openSince: state === 'IN' && !dayIsOver ? start : 0,
@@ -778,24 +805,26 @@ function buildReport(rows, nowMs, empRows) {
       d.sessions, d.status,
       Math.round(d.work), Math.round(d.brk), Math.round(d.namaz),
       d.final ? Math.round(d.overtime) : 0, d.final ? Math.round(d.short) : 0, d.final ? 'Y' : 'N',
-      Math.round(d.required), d.openSince ? String(d.openSince) : '']);
+      Math.round(d.required), d.openSince ? String(d.openSince) : '',
+      d.halfDay ? 'Y' : '', d.final ? Math.round(d.relief) : 0]);
 
     if (g.portal) records.push({ id: g.portal, day: g.day, final: d.final, work: Math.round(d.work),
       required: Math.round(d.required), ot: d.final ? Math.round(d.overtime) : 0, short: d.final ? Math.round(d.short) : 0 });
 
     const mk = g.day.slice(0, 7) + '|' + (g.portal || g.uid);
-    if (!monthly[mk]) monthly[mk] = { month: g.day.slice(0, 7), name: who, days: 0, work: 0, ot: 0, sh: 0, brk: 0, nmz: 0, inc: 0 };
+    if (!monthly[mk]) monthly[mk] = { month: g.day.slice(0, 7), name: who, days: 0, work: 0, ot: 0, sh: 0, brk: 0, nmz: 0, inc: 0, half: 0 };
     const M = monthly[mk];
     M.days++; M.work += d.work; M.brk += d.brk; M.nmz += d.namaz;
     if (d.final) { M.ot += d.overtime; M.sh += d.short; }
     if (d.status === 'Incomplete' || d.status === 'No final check out') M.inc++;
+    if (d.final && d.halfDay) M.half++;
   });
   daily.sort((a, b) => (a[0] === b[0] ? (a[2] < b[2] ? -1 : 1) : (a[0] < b[0] ? 1 : -1)));
 
   const monthlyRows = Object.keys(monthly).map(k => {
     const M = monthly[k];
     return [M.month, M.name, M.days, fmtDur(M.work), fmtDur(M.work / M.days), fmtDur(M.brk), fmtDur(M.nmz),
-      fmtDur(M.ot), fmtDur(M.sh), fmtDur(M.ot - M.sh), M.inc];
+      fmtDur(M.ot), fmtDur(M.sh), fmtDur(M.ot - M.sh), M.inc, M.half];
   }).sort((a, b) => (a[0] === b[0] ? (a[1] < b[1] ? -1 : 1) : (a[0] < b[0] ? 1 : -1)));
 
   return {
@@ -803,7 +832,7 @@ function buildReport(rows, nowMs, empRows) {
     dailyHeaders: DAILY_HEADERS,
     daily: daily,
     monthlyHeaders: ['Month', 'Employee', 'Days', 'Total Work', 'Avg / Day', 'Total Break', 'Total Namaz',
-      'Overtime', 'Short', 'Net (OT − Short)', 'Incomplete Days'],
+      'Overtime', 'Short', 'Net (OT − Short)', 'Incomplete Days', 'Half Days'],
     monthly: monthlyRows,
   };
 }
@@ -811,7 +840,7 @@ function buildReport(rows, nowMs, empRows) {
 const DAILY_HEADERS = ['Date', 'Employee ID', 'Slack Name', 'First In', 'Last Out', 'Work', 'Break', 'Namaz',
   'Extra Break', 'Overtime', 'Short', 'Sessions', 'Status',
   'Work (min)', 'Break (min)', 'Namaz (min)', 'Overtime (min)', 'Short (min)', 'Final',
-  'Required (min)', 'Open Since (ms)'];
+  'Required (min)', 'Open Since (ms)', 'Half Day', 'Relief (min)'];
 
 /** Employees tab rows [ID, Password, Slack Name?] -> function(slackName) => ID ya '' */
 function buildEmployeeMatcher(empRows) {
@@ -857,6 +886,7 @@ function getAttendanceData_(ss, onlyId) {
       short: Number(r[c('Short (min)')]) || 0, status: r[c('Status')], final: r[c('Final')] === 'Y',
       required: c('Required (min)') >= 0 && r[c('Required (min)')] !== '' ? Number(r[c('Required (min)')]) : null,
       openSince: Number(r[c('Open Since (ms)')]) || 0,
+      halfDay: c('Half Day') >= 0 && r[c('Half Day')] === 'Y', relief: Number(r[c('Relief (min)')]) || 0,
     });
   }
   return out;
@@ -867,7 +897,7 @@ function getOpenIssues_(ss, limit) {
   const sh = ss.getSheetByName(SHEETS.ISSUES);
   if (!sh || sh.getLastRow() < 2) return [];
   return sh.getRange(2, 1, sh.getLastRow() - 1, 9).getDisplayValues()
-    .filter(r => String(r[8]).toUpperCase() !== 'TRUE' && r[3] !== 'INFO')
+    .filter(r => String(r[8]).toUpperCase() !== 'TRUE' && r[3] !== 'INFO' && r[3] !== 'NOTICE')
     .slice(0, limit || 50)
     .map(r => ({ date: String(r[1]), name: String(r[2]), severity: r[3], problem: r[4], text: r[5], link: r[6] }));
 }

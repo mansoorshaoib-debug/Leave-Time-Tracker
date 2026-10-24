@@ -60,3 +60,12 @@ FORAN UPDATE (Slack message aate hi ~1 minute mein)
    Apps Script > Project Settings > Script Properties: SLACK_VERIFICATION_TOKEN = token
 - Website har minute khud naya data check karti hai (refresh ki zaroorat nahi)
 - 15 minute wali sync backup ke taur par chalti rehti hai
+
+HALF DAY / EMERGENCY
+- Employee Slack mein likhe:  Checkout (Halfday)   (half day / halfdy / emergency bhi chalta hai)
+- Us din short time NAHI lagta (8h poora maana jata hai); website par likha aata hai kitna kaam kiya
+- Admin ko Slack DM: "Half day check out 2:30 PM — 5h kaam kiya"
+- Weekly / Monthly summary mein: "Half day relief: X days"; Monthly Summary tab mein "Half Days" column
+- Half day ke baad usi din wapas check in kiya -> half day khatam, normal din
+- Simple "Checkout" ke baad usi din wapas check in -> beech ka waqt BREAK mein ginta hai
+- Raw Log ke Manual Type mein ab OUT_HALFDAY bhi hai (dropdown update ke liye menu > "2) Setup" ek dafa chalayein)

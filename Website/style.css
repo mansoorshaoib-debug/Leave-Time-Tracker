@@ -748,3 +748,5 @@ a.badge{text-decoration:none;}
 }
 .info-note b{color:var(--text);}
 .anet.muted, b.muted{color:var(--text-3); font-weight:600;}
+.t-status.k-half i{background:var(--green);}
+.lock-clock .time .ampm{font-size:.3em; font-weight:600; letter-spacing:0; margin-left:.2em; opacity:.8;}
