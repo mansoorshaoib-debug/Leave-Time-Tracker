@@ -69,3 +69,24 @@ HALF DAY / EMERGENCY
 - Half day ke baad usi din wapas check in kiya -> half day khatam, normal din
 - Simple "Checkout" ke baad usi din wapas check in -> beech ka waqt BREAK mein ginta hai
 - Raw Log ke Manual Type mein ab OUT_HALFDAY bhi hai (dropdown update ke liye menu > "2) Setup" ek dafa chalayein)
+
+TIME BALANCE (overtime aur short dono)
+- Overtime: balance +8h = +1 extra leave (DM: "Mubarak ho")
+- Short time pehle overtime se katta hai; balance minus mein gaya -> DM: "paid leave bacha lein"
+- Balance -8h = -1 paid leave (DM). Baad ka overtime minus wala time pehle bharta hai
+- Website: Overtime > "Leave history" (+1 / -1 permanent), laal line jab balance minus ho
+- Sheet: Earned Leaves tab mein "Type" (Earned / Cut), Overtime Months mein "Paid Leaves Cut"
+
+REMINDERS / WARNINGS (Attendance.gs CONFIG mein badal sakte hain)
+- 12:10 tak check in nahi (Mon–Sat, chutti / Sunday nahi) -> channel mein @tag warning
+- Lagatar 2 kaam ke din late (bina bataye) -> "daily late aa rahe hain, routine sahi karein"
+- Employee ne pehle "Late" / "Aaj late aaunga" / "der se aaunga" likh diya -> warning nahi
+  (WhatsApp par bataya ho to admin Raw Log mein row: Date, Employee, Manual Type = LATE)
+- Break / namaz ke 1 ghante baad check in nahi -> @tag warning
+- Raat 11 baje tak check out nahi -> @tag "overtime kar rahe hain?"
+  (raat ko "Checkout (9:30)" likh sakte hain — 12 ghante tak purana time chalta hai)
+- Subah tak check out nahi -> employee ko DM: "time gina nahi gaya, HR se raabta karein"
+- Har message sirf ek dafa. Sab ka record "Notices" tab mein (history)
+- Pehli run par purani cheezon ke messages nahi jate ("Skipped (first run)")
+- Band karna ho: CONFIG.SEND_EMPLOYEE_MESSAGES = false
+- Script khud theek waqt par chalti hai (Triggers mein "reminderTick")

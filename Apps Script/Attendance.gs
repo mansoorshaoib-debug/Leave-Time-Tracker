@@ -43,7 +43,15 @@ const CONFIG = {
   OVERTIME_HISTORY_WEEKS: 2,                 // "Overtime History" tab mein sirf itne haftay (is + pichla)
   SETTLE_GRACE_DAYS: 3,                      // mahina khatam hone ke itne din baad "Final" (lock) hota hai
 
+  // ---- Reminders / warnings (channel mein employee ko tag, aur DM) ----
+  LATE_AFTER: '12:10',                       // is ke baad check in = late (Mon–Sat; Sunday/chutti par nahi)
+  BREAK_REMIND_MINUTES: 60,                  // break / namaz ke baad itni der check in nahi -> tag
+  NIGHT_CHECK: '23:00',                      // is waqt tak check out nahi -> "overtime kar rahe hain?" tag
+  HR_NAMES: 'HR ya Haseeb bhai',             // messages mein sirf naam (tag nahi)
+  SEND_EMPLOYEE_MESSAGES: true,              // false = employees ko koi channel message / DM nahi
+
   TYPED_TIME_MAX_BACK_MINUTES: 180,          // message mein likha time max kitna purana ho sakta hai
+  TYPED_TIME_MAX_BACK_CHECKOUT_MINUTES: 12 * 60, // check out par likha time (raat ko "Checkout (9:30)") 12 ghante tak
   ALERT_ON_TYPED_TIME: true,                 // likha hua time use ho to admin ko batao
   SHORT_SESSION_MINUTES: 2,                  // is se chhota session = shayad ghalti
   LONG_SESSION_MINUTES: 10 * 60,             // is se lamba ek session = shayad check out bhool gaya
@@ -54,14 +62,14 @@ const CONFIG = {
 };
 
 const SHEETS = { RAW: 'Raw Log', DAILY: 'Daily Summary', MONTHLY: 'Monthly Summary', ISSUES: 'Issues',
-  OT_HISTORY: 'Overtime History', EARNED: 'Earned Leaves', OT_MONTHS: 'Overtime Months' };
+  OT_HISTORY: 'Overtime History', EARNED: 'Earned Leaves', OT_MONTHS: 'Overtime Months', NOTICES: 'Notices' };
 const RAW_HEADERS = ['Slack TS', 'Date', 'Time', 'Employee', 'User ID', 'Message', 'Detected',
   'Typed Time Used', 'Manual Type', 'Manual Time', 'Note', 'Posted At', 'Thread TS'];
 const R = { TS: 0, DAY: 1, TIME: 2, NAME: 3, UID: 4, TEXT: 5, DETECTED: 6, TYPED: 7,
   MAN_TYPE: 8, MAN_TIME: 9, NOTE: 10, POSTED: 11, THREAD: 12 };
-const TYPES = ['IN', 'OUT_BREAK', 'OUT_NAMAZ', 'OUT_END', 'OUT_HALFDAY', 'IGNORE'];
+const TYPES = ['IN', 'OUT_BREAK', 'OUT_NAMAZ', 'OUT_END', 'OUT_HALFDAY', 'LATE', 'IGNORE'];
 const TYPE_LABEL = { IN: 'Check in', OUT_BREAK: 'Out - Break', OUT_NAMAZ: 'Out - Namaz',
-  OUT_END: 'Out - Day end', OUT_HALFDAY: 'Out - Half day', IGNORE: 'Ignore', UNREADABLE: '❓ UNREADABLE' };
+  OUT_END: 'Out - Day end', OUT_HALFDAY: 'Out - Half day', LATE: 'Late (informed)', IGNORE: 'Ignore', UNREADABLE: '❓ UNREADABLE' };
 
 function ss_() { return SpreadsheetApp.openById(SHEET_ID); }
 
@@ -169,6 +177,7 @@ function handleSlackEvent_(body) {
   if (body.type !== 'event_callback') return out('ok');
   const ev = body.event || {};
   if (ev.channel !== CONFIG.CHANNEL_ID) return out('ok');
+  if (ev.bot_id || ev.subtype === 'bot_message') return out('ok');   // bot ke apne messages par sync nahi
   const cache = CacheService.getScriptCache();
   if (body.event_id) {                                   // Slack retry -> dobara kaam nahi
     if (cache.get('ev_' + body.event_id)) return out('ok');
@@ -215,7 +224,10 @@ function recalculateOnly() {
   writeTable_(ss.getSheetByName(SHEETS.DAILY), result.dailyHeaders, result.daily);
   writeTable_(ss.getSheetByName(SHEETS.MONTHLY), result.monthlyHeaders, result.monthly);
   writeIssues_(ss.getSheetByName(SHEETS.ISSUES), result.issues);
-  updateOvertime_(ss, result.records, Date.now());
+  const now = Date.now();
+  const plan = updateOvertime_(ss, result.records, now);
+  try { runNotices_(ss, result, plan, now); } catch (e) { Logger.log('Notices error: ' + e.message); }
+  try { scheduleReminders_(result.records, now); } catch (e) { Logger.log('Reminder schedule error: ' + e.message); }
 }
 
 /************************ SLACK API ************************/
@@ -465,7 +477,10 @@ const WORDS = {
   inTypos: ['inn', 'ib', 'un'],
   backIn: ['back', 'wapis', 'wapas', 'returned', 'resume', 'resumed'],
   half: ['halfday', 'half', 'halfdays', 'emergency', 'emergancy', 'urgent'],   // "Checkout (Halfday)"
-  filler: ['day', 'sir', 'ji', 'g', 'for', 'the', 'and', 'to', 'from', 'after', 'am', 'pm', 'time', 'at', 'now',
+  late: ['late', 'der', 'dair', 'dyr', 'lete'],                                  // "Aaj late aaunga" = pehle se bata diya
+  filler: ['day', 'aaunga', 'aunga', 'aaungi', 'aungi', 'aaenge', 'aayenge', 'ayenge', 'jaunga', 'jaungi', 'se',
+    'thora', 'thoda', 'thori', 'thodi', 'minute', 'minutes', 'min', 'mins', 'baje', 'bje', 'tak', 'gi', 'ga', 'sorry', 'kal',
+    'sir', 'ji', 'g', 'for', 'the', 'and', 'to', 'from', 'after', 'am', 'pm', 'time', 'at', 'now',
     'done', 'ho', 'hon', 'hn', 'raha', 'rahi', 'hu', 'hoon', 'gaya', 'gya', 'kr', 'ker', 'kar', 'de', 'diya',
     'please', 'pls', 'today', 'aaj', 'aj', 'ok', 'jee', 'mein', 'me', 'my', 'of', 'a', 'is'],
 };
@@ -523,7 +538,7 @@ function parseMessage(text) {
   const tokens = s ? s.split(/\s+/) : [];
 
   let hasCheck = false, hasIn = false, hasOut = false, weakIn = false, weakOutTypo = false, weakInTypo = false;
-  let namaz = false, brk = false, half = false, fuzzy = false, unknown = [];
+  let namaz = false, brk = false, half = false, late = false, fuzzy = false, unknown = [];
 
   tokens.forEach(t => {
     let used = false;
@@ -540,6 +555,7 @@ function parseMessage(text) {
       const c = matchList(t, WORDS.check);
       if (c) { hasCheck = true; used = true; if (c === 'fuzzy') fuzzy = true; }
     }
+    if (!used && WORDS.late.indexOf(t) >= 0) { late = true; used = true; }
     if (!used) {
       const hd = matchList(t, WORDS.half);
       if (hd) { half = true; used = true; if (hd === 'fuzzy') fuzzy = true; }
@@ -574,6 +590,9 @@ function parseMessage(text) {
   } else if (weakIn) {
     res.type = 'IN';
     if (!namaz && !brk) res.warn = '"back/wapis" ko check in maana';   // "back from namaz" = saaf check in
+  } else if (late) {
+    res.type = 'LATE';                        // in/out nahi, sirf "late aaunga" -> warning tag nahi jayega
+    return res;
   } else {
     res.warn = 'Check in / check out samajh nahi aaya';
     return res;
@@ -663,6 +682,7 @@ function buildReport(rows, nowMs, empRows) {
   const uidToPortal = {}, portalToUids = {}, unmatched = {};
   const rawDayTime = [], rawNotes = [], rawTs = [];
   const groups = {};   // key uid|day -> {name, day, events}
+  const lateInformed = {};   // key portal|day -> employee ne pehle se late bata diya
   let manualCounter = 0;
 
   rows.forEach((r, i) => {
@@ -714,13 +734,14 @@ function buildReport(rows, nowMs, empRows) {
         issues.push({ key: 'MANTIME|' + ts, day: issueDay, name: name, severity: 'ERROR',
           problem: 'Manual Time samajh nahi aaya (format: 12:14 PM, aur manual row mein Date bhi likhein)', text: manTime, link: link });
       }
-    } else if (parsed.typed && posted && !manType) {
+    } else if (parsed.typed && posted && !manType && parsed.type !== 'LATE') {
       if (parsed.typed.invalid) {
         notes.push('Likha time ghalat: ' + parsed.typed.raw);
         issues.push({ key: 'TYPEDBAD|' + ts, day: issueDay, name: name, severity: 'WARNING',
           problem: 'Message mein likha time ghalat hai — Slack ka time use kiya', text: r[R.TEXT], link: link });
       } else {
-        const res = resolveTypedTime(parsed.typed, posted, CONFIG.TYPED_TIME_MAX_BACK_MINUTES, false);
+        const maxBack = /^OUT/.test(parsed.type) ? CONFIG.TYPED_TIME_MAX_BACK_CHECKOUT_MINUTES : CONFIG.TYPED_TIME_MAX_BACK_MINUTES;
+        const res = resolveTypedTime(parsed.typed, posted, maxBack, false);
         if (res && Math.abs(res.diff) >= 2) {
           ms = res.ms; notes.push('Likha time use kiya (' + fmtTime12(res.ms) + ')');
           if (CONFIG.ALERT_ON_TYPED_TIME) issues.push({ key: 'TYPED|' + ts, day: workdayOf(ms), name: name, severity: 'WARNING',
@@ -733,6 +754,7 @@ function buildReport(rows, nowMs, empRows) {
       }
     }
 
+    if (!ms && type === 'LATE' && /^\d{4}-\d{2}-\d{2}$/.test(String(r[R.DAY]))) ms = dayMs_(String(r[R.DAY]), '09:00');
     if (!ms) {
       rawDayTime.push([r[R.DAY], r[R.TIME]]); rawNotes.push([notes.concat('Time missing').join('; ')]);
       return;
@@ -767,6 +789,7 @@ function buildReport(rows, nowMs, empRows) {
       else unmatched[uid] = name;
     }
     const gk = (portal || 'slack:' + uid) + '|' + day;
+    if (type === 'LATE') { lateInformed[gk] = true; return; }      // sirf "bata diya" — hisaab mein koi event nahi
     if (!groups[gk]) groups[gk] = { uid: uid, portal: portal, name: name, day: day, events: [] };
     groups[gk].events.push({ ms: ms, type: type, ts: ts, text: r[R.TEXT], link: link });
   });
@@ -806,10 +829,12 @@ function buildReport(rows, nowMs, empRows) {
       Math.round(d.work), Math.round(d.brk), Math.round(d.namaz),
       d.final ? Math.round(d.overtime) : 0, d.final ? Math.round(d.short) : 0, d.final ? 'Y' : 'N',
       Math.round(d.required), d.openSince ? String(d.openSince) : '',
-      d.halfDay ? 'Y' : '', d.final ? Math.round(d.relief) : 0]);
+      d.halfDay ? 'Y' : '', d.final ? Math.round(d.relief) : 0,
+      lateInformed[gk] ? 'Informed' : (!offDay && d.firstIn && d.firstIn > lateCutoffMs_(g.day)) ? 'Y' : '']);
 
-    if (g.portal) records.push({ id: g.portal, day: g.day, final: d.final, work: Math.round(d.work),
-      required: Math.round(d.required), ot: d.final ? Math.round(d.overtime) : 0, short: d.final ? Math.round(d.short) : 0 });
+    if (g.portal) records.push({ id: g.portal, uid: g.uid, day: g.day, final: d.final, work: Math.round(d.work),
+      required: Math.round(d.required), ot: d.final ? Math.round(d.overtime) : 0, short: d.final ? Math.round(d.short) : 0,
+      status: d.status, firstInMs: d.firstIn || 0, lastOutMs: d.lastOut || 0, halfDay: !!d.halfDay });
 
     const mk = g.day.slice(0, 7) + '|' + (g.portal || g.uid);
     if (!monthly[mk]) monthly[mk] = { month: g.day.slice(0, 7), name: who, days: 0, work: 0, ot: 0, sh: 0, brk: 0, nmz: 0, inc: 0, half: 0 };
@@ -828,7 +853,7 @@ function buildReport(rows, nowMs, empRows) {
   }).sort((a, b) => (a[0] === b[0] ? (a[1] < b[1] ? -1 : 1) : (a[0] < b[0] ? 1 : -1)));
 
   return {
-    rawDayTime: rawDayTime, rawNotes: rawNotes, rawTs: rawTs, issues: issues, records: records,
+    rawDayTime: rawDayTime, rawNotes: rawNotes, rawTs: rawTs, issues: issues, records: records, lateInformed: lateInformed,
     dailyHeaders: DAILY_HEADERS,
     daily: daily,
     monthlyHeaders: ['Month', 'Employee', 'Days', 'Total Work', 'Avg / Day', 'Total Break', 'Total Namaz',
@@ -840,7 +865,7 @@ function buildReport(rows, nowMs, empRows) {
 const DAILY_HEADERS = ['Date', 'Employee ID', 'Slack Name', 'First In', 'Last Out', 'Work', 'Break', 'Namaz',
   'Extra Break', 'Overtime', 'Short', 'Sessions', 'Status',
   'Work (min)', 'Break (min)', 'Namaz (min)', 'Overtime (min)', 'Short (min)', 'Final',
-  'Required (min)', 'Open Since (ms)', 'Half Day', 'Relief (min)'];
+  'Required (min)', 'Open Since (ms)', 'Half Day', 'Relief (min)', 'Late'];
 
 /** Employees tab rows [ID, Password, Slack Name?] -> function(slackName) => ID ya '' */
 function buildEmployeeMatcher(empRows) {
@@ -887,6 +912,7 @@ function getAttendanceData_(ss, onlyId) {
       required: c('Required (min)') >= 0 && r[c('Required (min)')] !== '' ? Number(r[c('Required (min)')]) : null,
       openSince: Number(r[c('Open Since (ms)')]) || 0,
       halfDay: c('Half Day') >= 0 && r[c('Half Day')] === 'Y', relief: Number(r[c('Relief (min)')]) || 0,
+      late: c('Late') >= 0 ? String(r[c('Late')] || '') : '',
     });
   }
   return out;
@@ -927,11 +953,11 @@ function getOpenIssues_(ss, limit) {
  * ===================================================================== */
 const OTM_HEADERS = ['Key', 'Employee ID', 'Month', 'Status', 'Carried In', 'Overtime', 'Short', 'Total',
   'Extra Leaves', 'Carried Forward', 'Days Counted', 'Updated On',
-  'Carried In (min)', 'Overtime (min)', 'Short (min)', 'Total (min)', 'Carried Forward (min)'];
-const OTM = { KEY: 0, ID: 1, MONTH: 2, STATUS: 3, LEAVES: 8, DAYS: 10, CIN: 12, OT: 13, SH: 14, TOT: 15, COUT: 16, TEXT_COLS: 12 };
+  'Carried In (min)', 'Overtime (min)', 'Short (min)', 'Total (min)', 'Carried Forward (min)', 'Paid Leaves Cut'];
+const OTM = { KEY: 0, ID: 1, MONTH: 2, STATUS: 3, LEAVES: 8, DAYS: 10, CIN: 12, OT: 13, SH: 14, TOT: 15, COUT: 16, CUT: 17, TEXT_COLS: 12 };
 const EARNED_HEADERS = ['Key', 'Employee ID', 'Date Generated', 'Month', 'Overtime Used', 'Extra Leaves',
-  'Balance After', 'Status', 'Saved On', 'Balance After (min)'];
-const EAR = { KEY: 0, ID: 1, DATE: 2, MONTH: 3, LEAVES: 5, STATUS: 7, AFTER: 9, TEXT_COLS: 9 };
+  'Balance After', 'Status', 'Saved On', 'Balance After (min)', 'Type'];
+const EAR = { KEY: 0, ID: 1, DATE: 2, MONTH: 3, LEAVES: 5, STATUS: 7, AFTER: 9, TYPE: 10, TEXT_COLS: 9 };
 const OTH_HEADERS = ['Employee ID', 'Week Starting', 'Date', 'Day', 'Worked', 'Required', 'Overtime', 'Short',
   'Worked (min)', 'Required (min)', 'Overtime (min)', 'Short (min)'];
 
@@ -939,15 +965,19 @@ const OTH_HEADERS = ['Employee ID', 'Week Starting', 'Date', 'Day', 'Worked', 'R
 function runMonth(carryIn, days) {
   const per = CONFIG.OVERTIME_PER_LEAVE_MINUTES, red = CONFIG.SHORT_REDUCES_OVERTIME;
   let bal = carryIn, ot = 0, short = 0, counted = 0;
-  const events = [];
+  const events = [], warnings = [];
   days.forEach(d => {
     if (!d.final) return;
     counted++; ot += d.ot; short += d.short;
+    const before = bal;
     bal += d.ot - (red ? d.short : 0);
-    while (bal >= per) { bal -= per; events.push({ day: d.day, after: bal }); }
+    while (bal >= per) { bal -= per; events.push({ day: d.day, after: bal, type: 'Earned' }); }     // +1 extra leave
+    while (bal <= -per) { bal += per; events.push({ day: d.day, after: bal, type: 'Cut' }); }       // −1 paid leave
+    if (before >= 0 && bal < 0) warnings.push({ day: d.day, after: bal });                          // minus shuru
   });
+  const earned = events.filter(e => e.type === 'Earned').length;
   return { carryIn: carryIn, ot: ot, short: short, total: carryIn + ot - (red ? short : 0),
-    leaves: events.length, carryOut: bal, counted: counted, events: events };
+    leaves: earned, cut: events.length - earned, carryOut: bal, counted: counted, events: events, warnings: warnings };
 }
 
 function nextMonth_(m) {
@@ -1013,6 +1043,7 @@ function updateOvertime_(ss, records, nowMs) {
   hSh.setFrozenRows(1);
   const hist = buildOvertimeHistory(records, today);
   if (hist.length) hSh.getRange(2, 1, hist.length, OTH_HEADERS.length).setValues(hist);
+  return plan;
 }
 
 /** Pure: nayi Overtime Months + Earned Leaves rows banao. Final rows jaisi ki taisi. */
@@ -1031,7 +1062,7 @@ function planOvertime(records, mRows, eRows, today, stamp) {
   });
   months.forEach(r => { byEmp[r[OTM.ID]] = byEmp[r[OTM.ID]] || {}; });
 
-  const touched = {}, newEvents = [];
+  const touched = {}, newEvents = [], warnings = [];
   Object.keys(byEmp).forEach(id => {
     // start month se pehle ki purani rows sheet mein rehti hain lekin hisaab mein nahi aatin
     const list = Object.keys(byEmp[id]).concat(months.filter(r => r[OTM.ID] === id).map(r => String(r[OTM.MONTH])))
@@ -1047,11 +1078,13 @@ function planOvertime(records, mRows, eRows, today, stamp) {
       const status = monthClosed_(m, today) ? 'Final' : 'Running';
       const out = [key, id, m, status, fmtDur(res.carryIn), fmtDur(res.ot), fmtDur(res.short), fmtDur(res.total),
         String(res.leaves), fmtDur(res.carryOut), String(res.counted), stamp,
-        res.carryIn, res.ot, res.short, res.total, res.carryOut];
+        res.carryIn, res.ot, res.short, res.total, res.carryOut, res.cut];
       if (row) months[i] = out; else { idx[key] = months.length; months.push(out); }
       touched[key] = true;
       res.events.forEach((ev, n) => newEvents.push([key + '|' + (n + 1), id, ev.day, m,
-        fmtDur(CONFIG.OVERTIME_PER_LEAVE_MINUTES), '1', fmtDur(ev.after), status === 'Final' ? 'Final' : 'This month', stamp, ev.after]));
+        ev.type === 'Cut' ? fmtDur(CONFIG.OVERTIME_PER_LEAVE_MINUTES) + ' short' : fmtDur(CONFIG.OVERTIME_PER_LEAVE_MINUTES),
+        ev.type === 'Cut' ? '-1' : '1', fmtDur(ev.after), status === 'Final' ? 'Final' : 'This month', stamp, ev.after, ev.type]));
+      res.warnings.forEach(w => warnings.push({ id: id, day: w.day, after: w.after }));
       carry = res.carryOut;
     }
   });
@@ -1059,7 +1092,7 @@ function planOvertime(records, mRows, eRows, today, stamp) {
   // Earned Leaves: jo mahine dobara calculate nahi hue un ki rows jaisi ki taisi; baqi nayi
   const events = eRows.filter(r => !touched[String(r[EAR.ID]) + '|' + String(r[EAR.MONTH])]).map(r => r.slice()).concat(newEvents);
   events.sort((a, b) => (String(a[EAR.DATE]) === String(b[EAR.DATE]) ? (a[EAR.KEY] < b[EAR.KEY] ? -1 : 1) : (String(a[EAR.DATE]) < String(b[EAR.DATE]) ? -1 : 1)));
-  return { months: months, events: events, finalMonths: finalMonths };
+  return { months: months, events: events, finalMonths: finalMonths, warnings: warnings };
 }
 
 /** Pure: aakhri N haftay, din-ba-din + har haftay ka total */
@@ -1096,12 +1129,14 @@ function getOvertimeData_(ss, onlyId) {
     const id = String(r[OTM.ID]); if (!keep(id) || String(r[OTM.MONTH]) < startMonth) return;
     get(id).months.push({ month: String(r[OTM.MONTH]), status: String(r[OTM.STATUS]), carryIn: Number(r[OTM.CIN]) || 0,
       ot: Number(r[OTM.OT]) || 0, short: Number(r[OTM.SH]) || 0, total: Number(r[OTM.TOT]) || 0,
-      leaves: Number(r[OTM.LEAVES]) || 0, carryOut: Number(r[OTM.COUT]) || 0, days: Number(r[OTM.DAYS]) || 0 });
+      leaves: Number(r[OTM.LEAVES]) || 0, carryOut: Number(r[OTM.COUT]) || 0, days: Number(r[OTM.DAYS]) || 0,
+      cut: Number(r[OTM.CUT]) || 0 });
   });
   if (eSh) readRows_(eSh, EARNED_HEADERS.length).forEach(r => {
     const id = String(r[EAR.ID]); if (!keep(id) || String(r[EAR.DATE]) < start) return;
     get(id).earned.push({ date: String(r[EAR.DATE]), month: String(r[EAR.MONTH]), used: CONFIG.OVERTIME_PER_LEAVE_MINUTES,
-      leaves: Number(r[EAR.LEAVES]) || 1, after: Number(r[EAR.AFTER]) || 0, status: String(r[EAR.STATUS]) });
+      leaves: Number(r[EAR.LEAVES]) || 1, after: Number(r[EAR.AFTER]) || 0, status: String(r[EAR.STATUS]),
+      type: String(r[EAR.TYPE] || '') === 'Cut' || Number(r[EAR.LEAVES]) < 0 ? 'Cut' : 'Earned' });
   });
   if (hSh) readRows_(hSh, OTH_HEADERS.length).forEach(r => {
     const id = String(r[0]); if (!keep(id) || !r[2] || String(r[2]) < start) return;      // "Week total" rows website khud jorti hai
@@ -1110,4 +1145,185 @@ function getOvertimeData_(ss, onlyId) {
   });
   Object.keys(out).forEach(id => out[id].months.sort((a, b) => (a.month < b.month ? -1 : 1)));
   return out;
+}
+
+
+/* =====================================================================
+ *  REMINDERS + WARNINGS  (channel mein employee ko tag, aur DM)
+ *
+ *  Channel (#daily-check-in), employee @tag:
+ *   - LATE        12:10 tak check in nahi (Mon–Sat, chutti/Sunday nahi, "late" bata diya ho to nahi)
+ *   - LATE_REPEAT pichla kaam ka din bhi late tha (bina bataye) -> "routine sahi karein"
+ *   - BREAK       break / namaz ke baad 1 ghanta, check in nahi
+ *   - NIGHT       raat 11 baje tak check out nahi
+ *  DM (employee ko):
+ *   - NOT_COUNTED pichle din check out nahi -> time gina nahi gaya
+ *   - EARNED      +1 extra leave 🎉
+ *   - NEGATIVE    time balance minus mein gaya -> paid leave bacha lo
+ *   - CUT         −1 paid leave (8h short)
+ *  Har message sirf EK dafa: "Notices" tab mein record (yahi history + duplicate se bachao).
+ *  Script theek waqt par khud jaagti hai (reminderTick): 12:10, break + 1 ghanta, 11 PM, 5 AM.
+ * ===================================================================== */
+const NOTICE_HEADERS = ['Key', 'Date', 'Employee ID', 'Type', 'Sent To', 'Message', 'Sent At', 'Result'];
+
+function hm_(s) { const p = String(s).split(':'); return { h: Number(p[0]), m: Number(p[1] || 0) }; }
+function dayMs_(day, hhmm) {
+  const t = hm_(hhmm), d = day.split('-').map(Number);
+  return localToMs(d[0], d[1], d[2], t.h, t.m);
+}
+function lateCutoffMs_(day) { return dayMs_(day, CONFIG.LATE_AFTER); }
+function isOffDay_(day) { return CONFIG.WEEKLY_OFF_DAYS.indexOf(new Date(day + 'T12:00:00Z').getUTCDay()) >= 0; }
+function niceDate_(day) {
+  const M = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const d = day.split('-').map(Number); return d[2] + ' ' + M[d[1] - 1];
+}
+/** "14-Feb-2026", "01-June-2026", "2026-02-14", "14/02/2026", Date -> "2026-02-14" */
+function normDate_(v) {
+  if (v instanceof Date) return Utilities.formatDate(v, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  const s = String(v || '').trim();
+  let m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/); if (m) return m[1] + '-' + pad2(+m[2]) + '-' + pad2(+m[3]);
+  m = s.match(/^(\d{1,2})[-\s/]([A-Za-z]+)[-\s/,]*(\d{4})$/);
+  if (m) { const i = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'].indexOf(m[2].slice(0, 3).toLowerCase()); if (i >= 0) return m[3] + '-' + pad2(i + 1) + '-' + pad2(+m[1]); }
+  m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/); if (m) return m[3] + '-' + pad2(+m[2]) + '-' + pad2(+m[1]);
+  return '';
+}
+
+/** Pure: abhi kaun se messages banne chahiyein (duplicate check baad mein) */
+function planNotices(records, plan, lateInformed, leaveDays, nowMs) {
+  const out = [];
+  const today = workdayOf(nowMs);
+  const recent = addDaysStr_(today, -1);
+  const byKey = {}, uidOf = {}, lastSeen = {};
+  records.forEach(r => {
+    byKey[r.id + '|' + r.day] = r;
+    if (r.uid && String(r.uid).indexOf('U') === 0) uidOf[r.id] = r.uid;
+    if (!lastSeen[r.id] || r.day > lastSeen[r.id]) lastSeen[r.id] = r.day;
+  });
+  const tag = id => '<@' + uidOf[id] + '>';
+  const onLeave = (id, day) => !!(leaveDays[id] && leaveDays[id][day]);
+  const working = (id, day) => !isOffDay_(day) && !onLeave(id, day);
+  const HR = CONFIG.HR_NAMES;
+  const active = Object.keys(uidOf).filter(id => lastSeen[id] >= addDaysStr_(today, -14));   // pichle 14 din mein aaya
+
+  active.forEach(id => {
+    const rec = byKey[id + '|' + today];
+    // ---- LATE (12:10 ke baad, Mon–Sat, chutti nahi, bataya nahi) ----
+    const cut = lateCutoffMs_(today), night = dayMs_(today, CONFIG.NIGHT_CHECK);
+    if (working(id, today) && nowMs >= cut && nowMs < cut + 2 * 3600000 && !lateInformed[id + '|' + today]) {
+      const lateToday = !rec || !rec.firstInMs || rec.firstInMs > cut;
+      if (lateToday) {
+        let prev = addDaysStr_(today, -1), guard = 0;
+        while (guard++ < 10 && !working(id, prev)) prev = addDaysStr_(prev, -1);
+        const pr = byKey[id + '|' + prev];
+        const prevLate = pr && pr.firstInMs > lateCutoffMs_(prev) && !lateInformed[id + '|' + prev];
+        const text = prevLate
+          ? `⚠️ ${tag(id)} aap daily late aa rahe hain, yeh routine sahi nahi hai. Meharbani kar ke is routine ko sahi karein. Shukriya.`
+          : rec && rec.firstInMs
+            ? `⚠️ ${tag(id)} aap aaj late aaye (${fmtTime12(rec.firstInMs)}). Kindly ${HR} ko inform karein.`
+            : `⚠️ ${tag(id)} aap ne abhi tak check in nahi kiya (late arrival). Kindly check in karein ya ${HR} ko inform karein.`;
+        out.push({ key: 'LATE|' + id + '|' + today, day: today, id: id, type: prevLate ? 'LATE_REPEAT' : 'LATE', to: 'channel', text: text });
+      }
+    }
+    // ---- BREAK / NAMAZ 1 ghanta ----
+    if (rec && !rec.final && (rec.status === 'On break' || rec.status === 'At namaz') && rec.lastOutMs) {
+      const due = rec.lastOutMs + CONFIG.BREAK_REMIND_MINUTES * 60000;
+      if (nowMs >= due && nowMs < due + 2 * 3600000) {
+        out.push({ key: 'BREAK|' + id + '|' + rec.lastOutMs, day: today, id: id, type: 'BREAK', to: 'channel',
+          text: `⚠️ ${tag(id)} aap ne ${rec.status === 'At namaz' ? 'namaz' : 'break'} ke baad check in nahi kiya, ya aap ka break time over ho gaya hai. Kindly check karein ya ${HR} ko inform karein.` });
+      }
+    }
+    // ---- RAAT 11 baje tak check out nahi ----
+    if (rec && !rec.final && rec.status === 'Working now' && nowMs >= dayMs_(today, CONFIG.NIGHT_CHECK)) {
+      out.push({ key: 'NIGHT|' + id + '|' + today, day: today, id: id, type: 'NIGHT', to: 'channel',
+        text: `${tag(id)} aap ne check out nahi kiya. Kya aap overtime kar rahe hain? Agar haan, to kaam khatam kar ke check out karein. Agar nahi, to jis time nikle the woh time likh kar check out karein, jaise: Checkout (9:30)` });
+    }
+    // ---- Kal ka din gina nahi gaya (check out nahi) -> DM ----
+    const yday = addDaysStr_(today, -1), yr = byKey[id + '|' + yday];
+    if (yr && yr.status === 'Incomplete') {
+      out.push({ key: 'NOTCOUNTED|' + id + '|' + yday, day: yday, id: id, type: 'NOT_COUNTED', to: 'dm',
+        text: `Aap ka ${niceDate_(yday)} ka time gina nahi gaya kyun ke check out nahi tha. Meharbani kar ke ${HR} se raabta kar ke isay sahi karwayein, aur next time khayal rakhein.` });
+    }
+  });
+
+  // ---- Leaves: +1 mili / −1 kati, aur balance minus mein gaya -> DM ----
+  const seen = {};
+  (plan && plan.events || []).forEach(r => {
+    const id = String(r[EAR.ID]), day = String(r[EAR.DATE]);
+    if (!uidOf[id] || day < recent || day < CONFIG.OVERTIME_START_DATE) return;
+    const type = String(r[EAR.TYPE] || '') === 'Cut' || Number(r[EAR.LEAVES]) < 0 ? 'CUT' : 'EARNED';
+    const k = id + '|' + day + '|' + type; seen[k] = (seen[k] || 0) + 1;
+    const after = fmtDur(Number(r[EAR.AFTER]) || 0);
+    out.push({ key: type + '|' + k + '|' + seen[k], day: day, id: id, type: type, to: 'dm',
+      text: type === 'EARNED'
+        ? `🎉 Mubarak ho! Aap ka overtime 8 ghante poora ho gaya, aap ko 1 extra leave mil gayi (${niceDate_(day)}). Baqi overtime balance: ${after}. Shabash, aise hi lage rahein!`
+        : `⚠️ Aap ka short time 8 ghante ho gaya, is liye 1 paid leave kat gayi (${niceDate_(day)}). Balance ab: ${after}. Overtime kar ke time wapas cover kar sakte hain.` });
+  });
+  (plan && plan.warnings || []).forEach(w => {
+    if (!uidOf[w.id] || w.day < recent) return;
+    out.push({ key: 'NEGATIVE|' + w.id + '|' + w.day, day: w.day, id: w.id, type: 'NEGATIVE', to: 'dm',
+      text: `⚠️ Aap ka time balance minus mein chala gaya (${fmtDur(w.after)}). Minus 8 ghante hone par 1 paid leave kat jayegi, apni paid leave bacha lein bhai 🙂 Thora overtime kar ke yeh time wapas pura ho jata hai.` });
+  });
+  out.forEach(n => { n.uid = uidOf[n.id]; });
+  return out;
+}
+
+/** Notices bhejo (sirf naye), aur "Notices" tab mein likho */
+function runNotices_(ss, result, plan, nowMs) {
+  const firstRun = !ss.getSheetByName(SHEETS.NOTICES);      // pehli dafa: purani cheezon ke messages NAHI bhejte
+  const sh = ensureSheet_(ss, SHEETS.NOTICES, NOTICE_HEADERS);
+  const sent = {};
+  readRows_(sh, 1).forEach(r => { sent[String(r[0])] = true; });
+  const leaveDays = {};
+  if (typeof buildEmployees_ === 'function') {
+    const emps = buildEmployees_(ss);
+    Object.keys(emps).forEach(id => (emps[id].leaves || []).forEach(l => {
+      const d = normDate_(l.date); if (d) (leaveDays[id] = leaveDays[id] || {})[d] = true;
+    }));
+  }
+  const list = planNotices(result.records, plan, result.lateInformed || {}, leaveDays, nowMs).filter(n => !sent[n.key]);
+  if (!list.length) return;
+  const stamp = fmtDateTime(nowMs), rows = [];
+  list.forEach(n => {
+    let res = 'Not sent (SEND_EMPLOYEE_MESSAGES = false)';
+    if (firstRun) res = 'Skipped (first run)';
+    else if (CONFIG.SEND_EMPLOYEE_MESSAGES) {
+      const r = slackPost_('chat.postMessage', { channel: n.to === 'dm' ? n.uid : CONFIG.CHANNEL_ID, text: n.text });
+      res = r && r.ok ? 'Sent' : 'Failed: ' + (r && r.error);
+    }
+    rows.push([n.key, n.day, n.id, n.type, n.to === 'dm' ? 'DM' : '#daily-check-in', n.text, stamp, res]);
+  });
+  sh.getRange(1, 1, sh.getMaxRows(), 2).setNumberFormat('@');
+  sh.getRange(sh.getLastRow() + 1, 1, rows.length, NOTICE_HEADERS.length).setValues(rows);
+}
+
+/** Agla reminder kab? Usi waqt ke liye ek trigger (12:10, break + 1h, 11 PM, 5 AM) */
+function nextReminderMs(records, nowMs) {
+  const today = workdayOf(nowMs), times = [];
+  if (!isOffDay_(today)) times.push(lateCutoffMs_(today) + 30000);
+  times.push(dayMs_(today, CONFIG.NIGHT_CHECK) + 30000);
+  times.push(dayMs_(addDaysStr_(today, 1), '05:05'));                   // din badla -> "gina nahi gaya" DM
+  records.forEach(r => {
+    if (r.day === today && !r.final && (r.status === 'On break' || r.status === 'At namaz') && r.lastOutMs)
+      times.push(r.lastOutMs + CONFIG.BREAK_REMIND_MINUTES * 60000 + 30000);
+  });
+  const future = times.filter(t => t > nowMs + 30000).sort((a, b) => a - b);
+  return future.length ? future[0] : 0;
+}
+
+function scheduleReminders_(records, nowMs) {
+  const next = nextReminderMs(records, nowMs);
+  const props = PropertiesService.getScriptProperties();
+  const have = ScriptApp.getProjectTriggers().filter(t => t.getHandlerFunction() === 'reminderTick');
+  if (next && have.length === 1 && props.getProperty('NEXT_TICK') === String(next)) return;   // pehle se set
+  have.forEach(t => ScriptApp.deleteTrigger(t));
+  if (!next) return;
+  ScriptApp.newTrigger('reminderTick').timeBased().at(new Date(next)).create();
+  props.setProperty('NEXT_TICK', String(next));
+}
+
+/** Reminder ke waqt chalti hai: taaza Slack data laao, phir check (recalculate khud agla reminder set karta hai) */
+function reminderTick() {
+  ScriptApp.getProjectTriggers().forEach(t => { if (t.getHandlerFunction() === 'reminderTick') ScriptApp.deleteTrigger(t); });
+  PropertiesService.getScriptProperties().deleteProperty('NEXT_TICK');
+  syncWindow_(CONFIG.QUICK_SYNC_DAYS);
 }

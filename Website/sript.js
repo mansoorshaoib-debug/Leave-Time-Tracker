@@ -95,10 +95,12 @@ function summary(emp){
   const used = getUsed(emp);
   const usedCount = used.reduce((s, l) => s + (num(l.days) || 1), 0);
   const extra = getExtra(emp);
-  const otRewards = attModel(emp).rewards.reduce((t, r) => t + r.days, 0);   // har mahine: har 8h overtime = 1 leave
+  const mm = attModel(emp);
+  const otRewards = mm.rewards.reduce((t, r) => t + r.days, 0);   // har 8h overtime = +1 leave
+  const otCut = mm.cuts.length;                                    // har 8h short = −1 paid leave
   const extraAll = extra.count + otRewards;
-  const total = ANNUAL_LEAVES + extraAll;
-  return { used, usedCount, extra, otRewards, extraAll, total, remaining: total - usedCount };
+  const total = ANNUAL_LEAVES + extraAll - otCut;
+  return { used, usedCount, extra, otRewards, otCut, extraAll, total, remaining: total - usedCount };
 }
 
 /* ---------------- data ----------------
@@ -520,9 +522,11 @@ function runMonth(carryIn, days){
     if(!x.final) return;
     ot += x.ot; short += x.short;
     bal += x.ot - (red ? x.short : 0);
-    while(bal >= ATT.PER_LEAVE){ bal -= ATT.PER_LEAVE; events.push({ date: x.key, after: bal }); }
+    while(bal >= ATT.PER_LEAVE){ bal -= ATT.PER_LEAVE; events.push({ date: x.key, after: bal, type: "Earned" }); }
+    while(bal <= -ATT.PER_LEAVE){ bal += ATT.PER_LEAVE; events.push({ date: x.key, after: bal, type: "Cut" }); }
   });
-  return { carryIn, ot, short, total: carryIn + ot - (red ? short : 0), leaves: events.length, carryOut: bal, events };
+  const leaves = events.filter(e => e.type === "Earned").length;
+  return { carryIn, ot, short, total: carryIn + ot - (red ? short : 0), leaves, cut: events.length - leaves, carryOut: bal, events };
 }
 
 const KIND = {
@@ -537,7 +541,7 @@ function makeDay(d, r, leave, flags){
   const day = { d, key: ymd(d), off, r, leave, isToday: !!flags.today, preStart: ymd(d) < ATT.OT_START,
     work: 0, brk: 0, namaz: 0, ot: 0, short: 0, required: 0, net: 0, final: false };
   if(r){
-    Object.assign(day, { work: r.work, brk: r.brk, namaz: r.namaz, firstIn: r.firstIn, lastOut: r.lastOut });
+    Object.assign(day, { work: r.work, brk: r.brk, namaz: r.namaz, firstIn: r.firstIn, lastOut: r.lastOut, late: r.late || "" });
     day.required = r.required != null ? r.required : (off ? 0 : ATT.TARGET);
     if(r.final){
       day.final = true;
@@ -622,19 +626,22 @@ function attModel(emp){
       const me = new Date(ms.getFullYear(), ms.getMonth() + 1, 0), key = ymd(ms).slice(0, 7);
       const inside = days.filter(x => x.d >= ms && x.d <= me);
       const sv = srv && srv.months.find(x => x.month === key);
-      const r = sv ? { carryIn: sv.carryIn, ot: sv.ot, short: sv.short, total: sv.total, leaves: sv.leaves, carryOut: sv.carryOut, events: [] }
+      const r = sv ? { carryIn: sv.carryIn, ot: sv.ot, short: sv.short, total: sv.total, leaves: sv.leaves, cut: num(sv.cut), carryOut: sv.carryOut, events: [] }
                    : runMonth(carry, inside);
       if(!sv && !inside.length && !carry) continue;
       const current = today <= me;
       months.push({ key, start: ms, end: me, days: inside, t: totals(inside), current,
         status: sv ? sv.status : (current ? "Running" : "Final"), ...r });
-      if(!srv) r.events.forEach(e => earned.push({ date: e.date, month: key, used: ATT.PER_LEAVE, after: e.after, final: !current }));
+      if(!srv) r.events.forEach(e => earned.push({ date: e.date, month: key, used: ATT.PER_LEAVE, after: e.after, final: !current, type: e.type }));
       carry = r.carryOut;
     }
   }
-  if(srv) earned = (srv.earned || []).map(e => ({ date: e.date, month: e.month, used: num(e.used) || ATT.PER_LEAVE, after: num(e.after), final: e.status === "Final" }));
+  if(srv) earned = (srv.earned || []).map(e => ({ date: e.date, month: e.month, used: num(e.used) || ATT.PER_LEAVE, after: num(e.after), final: e.status === "Final",
+    type: e.type === "Cut" || num(e.leaves) < 0 ? "Cut" : "Earned" }));
   earned.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
-  const rewards = earned.map(e => ({ date: e.date, reason: `From overtime (8h) — ${monthLabel(monthOf(e.month))}`, days: 1 }));
+  // earned = poori leave history (+1 mili / −1 kati); rewards = sirf +1 wali
+  const rewards = earned.filter(e => e.type !== "Cut").map(e => ({ date: e.date, reason: `From overtime (8h) — ${monthLabel(monthOf(e.month))}`, days: 1 }));
+  const cuts = earned.filter(e => e.type === "Cut");
 
   // Overtime history: sirf aakhri 2 haftay (server "Overtime History" tab, warna yahin se)
   const histFrom = addDays(weekStart(today), -7);
@@ -642,7 +649,7 @@ function attModel(emp){
     ? srv.history.map(h => ({ d: parseDate(h.date), work: num(h.work), required: num(h.required), ot: num(h.ot), short: num(h.short) })).filter(h => h.d)
     : days.filter(x => x.final && !x.preStart && x.d >= histFrom).map(x => ({ d: x.d, work: x.work, required: x.required, ot: x.ot, short: x.short }));
 
-  const m = { days, byKey, recs, leaveMap, months, earned, rewards, otHistory, first, today,
+  const m = { days, byKey, recs, leaveMap, months, earned, rewards, cuts, otHistory, first, today,
     balance: months.length ? months[months.length - 1].carryOut : 0,
     todayDay: byKey.get(tk) || makeDay(today, null, leaveMap.get(tk), { today: true }) };
   _models.set(emp, m);
@@ -699,20 +706,22 @@ function statement(mo, next){
       <div><span>Overtime earned</span><b class="pos">+${fmtMin(mo.ot)}</b></div>
       ${ATT.SHORT_REDUCES_OVERTIME ? `<div><span>Short time</span><b class="${mo.short ? "neg" : ""}">${mo.short ? "−" + fmtMin(mo.short) : "0m"}</b></div>` : ""}
       <div class="hl"><span>Total overtime</span><b class="${tone(mo.total)}">${signed(mo.total)}</b></div>
-      <div><span>Extra leaves (each 8h = 1)</span><b class="${mo.leaves ? "pos" : ""}">${mo.leaves ? `+${mo.leaves} · −${mo.leaves * 8}h` : "0"}</b></div>
+      <div><span>Extra leaves (each 8h overtime = +1)</span><b class="${mo.leaves ? "pos" : ""}">${mo.leaves ? `+${mo.leaves} · −${mo.leaves * 8}h` : "0"}</b></div>
+      ${mo.cut ? `<div><span>Paid leaves cut (each 8h short = −1)</span><b class="neg">−${mo.cut} · +${mo.cut * 8}h</b></div>` : ""}
       <div class="hl"><span>Carried forward to ${next}</span><b class="${tone(mo.carryOut)}">${signed(mo.carryOut)}</b></div>
     </div>`;
 }
 
 function nextLeavePanel(m){
-  const pool = m.balance;
-  const pct = pool > 0 ? pool / ATT.PER_LEAVE : 0;
+  const pool = m.balance, neg = pool < 0;
+  const pct = Math.min(1, Math.abs(pool) / ATT.PER_LEAVE);
   return `
     <div class="apanel">
-      <div class="ph"><span>Overtime towards next extra leave</span><b class="${tone(pool)}">${pool < 0 ? signed(pool) : fmtMin(pool) + " / 8h"}</b></div>
-      <div class="pbar"><i style="width:0" data-w="${Math.round(pct * 100)}%"></i></div>
-      <div class="pnote">${pool < 0
-        ? `Short time of <b class="neg">${fmtMin(pool)}</b> to cover first. After that, overtime counts toward your next extra leave.`
+      <div class="ph"><span>${neg ? "Short time towards losing a paid leave" : "Overtime towards next extra leave"}</span>
+        <b class="${tone(pool)}">${neg ? "−" + fmtMin(pool) : fmtMin(pool)} / 8h</b></div>
+      <div class="pbar${neg ? " red" : ""}"><i style="width:0" data-w="${Math.round(pct * 100)}%"></i></div>
+      <div class="pnote">${neg
+        ? `<b class="neg">${fmtMin(ATT.PER_LEAVE + pool)}</b> more short time and <b>1 paid leave</b> will be cut. Overtime fills this back first — save your paid leave.`
         : `<b>${fmtMin(ATT.PER_LEAVE - pool)}</b> more overtime for your next extra leave.`}</div>
     </div>`;
 }
@@ -737,6 +746,8 @@ function dayRow(day, opts = {}){
     sub = [time, day.brk ? `Break ${fmtMin(day.brk)}` : "", day.namaz ? `Namaz ${fmtMin(day.namaz)}` : ""].filter(Boolean).join(" · ");
     if(day.kind === "incomplete") sub += ` · <span class="neg">Not counted</span>`;
     if(day.halfDay) sub += ` · <span class="pos">Half day — worked ${fmtMin(day.work)}</span>`;
+    if(day.late === "Y") sub += ` · <span class="neg">Late</span>`;
+    if(day.late === "Informed") sub += ` · <span class="muted">Late (informed)</span>`;
   } else if(day.kind === "leave"){
     main = `<span class="muted-main">Leave</span>`;
     sub = esc(day.leave.reason || "");
@@ -943,14 +954,15 @@ function otRow(h){
     </div>`;
 }
 function earnedRow(e){
+  const cut = e.type === "Cut";
   return `
     <div class="list-item">
-      ${calBadge(e.date, true)}
+      ${calBadge(e.date, !cut)}
       <div class="li-body">
-        <div class="li-title">+1 extra leave</div>
-        <div class="li-sub">${fmtMin(e.used)} overtime used · ${esc(monthLabel(parseDate(e.month + "-01")))}${e.final ? "" : ` · <span class="pos">this month</span>`}</div>
+        <div class="li-title">${cut ? "−1 paid leave cut" : "+1 extra leave"}</div>
+        <div class="li-sub">${fmtMin(e.used)} ${cut ? "short time" : "overtime"} · ${esc(monthLabel(parseDate(e.month + "-01")))}${e.final ? "" : ` · <span class="${cut ? "neg" : "pos"}">this month</span>`}</div>
       </div>
-      <span class="badge">+1</span>
+      <span class="badge${cut ? " red" : ""}">${cut ? "−1" : "+1"}</span>
     </div>`;
 }
 function mountOvertime(m, el, openDay){
@@ -966,7 +978,7 @@ function mountOvertime(m, el, openDay){
   const totalLeaves = m.earned.length;
   el.innerHTML = `
     ${nextLeavePanel(m)}
-    ${segmented("otSeg", "Overtime history", `Earned leaves <span class="pill">${totalLeaves}</span>`)}
+    ${segmented("otSeg", "Overtime history", `Leave history <span class="pill">${totalLeaves}</span>`)}
     <div id="otHist">
       ${weeks.map(w => {
         const net = w.t.ot - (ATT.SHORT_REDUCES_OVERTIME ? w.t.short : 0);
@@ -984,8 +996,8 @@ function mountOvertime(m, el, openDay){
       <p class="att-note">Only the latest 2 weeks are shown here. Your overtime balance and earned leaves are saved permanently.</p>
     </div>
     <div id="otEarned" hidden>
-      <div class="list">${m.earned.slice().reverse().map(earnedRow).join("") || `<p class="empty-note">No extra leaves from overtime yet.</p>`}</div>
-      <p class="att-note">Every time your overtime balance reaches 8h, 1 extra leave is added and 8h is taken from the balance. The rest carries forward.</p>
+      <div class="list">${m.earned.slice().reverse().map(earnedRow).join("") || `<p class="empty-note">No extra or cut leaves yet.</p>`}</div>
+      <p class="att-note">Balance +8h = 1 extra leave. Balance −8h = 1 paid leave cut. Short time is taken from overtime first. The rest carries forward. This history is saved permanently.</p>
     </div>`;
   wireSegmented("otSeg", ["otHist", "otEarned"]);
   el.querySelectorAll(".arow.click").forEach(r => r.onclick = () => openDay(parseDate(r.dataset.day)));
@@ -1029,6 +1041,7 @@ function viewLeaves(emp, s, m){
         <div><span>Annual leaves</span><b>${ANNUAL_LEAVES}</b></div>
         <div><span>Extra — worked on off day</span><b class="pos">+${s.extra.count}</b></div>
         <div><span>Extra — from overtime</span><b class="pos">+${s.otRewards}</b></div>
+        ${s.otCut ? `<div><span>Cut — short time (8h each)</span><b class="neg">−${s.otCut}</b></div>` : ""}
         <div><span>Leaves used</span><b>${s.usedCount ? "−" + s.usedCount : 0}</b></div>
         <div class="tot"><span>${s.remaining < 0 ? "Over limit" : "Leaves available"}</span><b class="${s.remaining < 0 ? "neg" : ""}">${s.remaining}</b></div>
       </div>
