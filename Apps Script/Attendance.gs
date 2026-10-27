@@ -50,6 +50,8 @@ const CONFIG = {
   HR_NAMES: 'HR ya Haseeb bhai',             // messages mein sirf naam (tag nahi)
   SEND_EMPLOYEE_MESSAGES: true,              // false = employees ko koi channel message / DM nahi
   IGNORE_SLACK_IDS: ['U0A5NCZM50F', 'U0BF2L9K3RU'],   // Haseeb Arshad (owner) + MacMini: in ke messages bilkul nahi gine jate
+  IGNORE_NAMES: ['Haseeb Arshad', 'Haseeb', 'MacMini'],  // naam se bhi (Slack naam ya Employees tab ka ID)
+  ALERT_MAX_DAYS_OLD: 3,                     // admin ko sirf itne din purane masle ka DM (purane sirf Issues tab mein)
 
   TYPED_TIME_MAX_BACK_MINUTES: 180,          // message mein likha time max kitna purana ho sakta hai
   TYPED_TIME_MAX_BACK_CHECKOUT_MINUTES: 12 * 60, // check out par likha time (raat ko "Checkout (9:30)") 12 ghante tak
@@ -368,6 +370,13 @@ function writeTable_(sh, headers, rows) {
   if (rows.length) sh.getRange(2, 1, rows.length, headers.length).setValues(rows);
 }
 
+/** Owner / ignore list: Slack ID ya naam (Slack naam ya Employees tab ID) */
+function isIgnored_(uid, name) {
+  if (uid && CONFIG.IGNORE_SLACK_IDS.indexOf(String(uid)) >= 0) return true;
+  const n = String(name || '').trim().toLowerCase();
+  return !!n && CONFIG.IGNORE_NAMES.some(x => String(x).trim().toLowerCase() === n);
+}
+
 function writeIssues_(sh, issues) {
   const headers = ['Key', 'Date', 'Employee', 'Severity', 'Problem', 'Message', 'Slack Link', 'Alerted', 'Resolved'];
   const old = {};
@@ -377,10 +386,15 @@ function writeIssues_(sh, issues) {
     });
   }
   const toAlert = [];
+  const oldest = addDaysStr_(workdayOf(Date.now()), -CONFIG.ALERT_MAX_DAYS_OLD);
+  issues = issues.filter(i => !isIgnored_('', i.name));            // owner ke masle bilkul nahi
   const rows = issues.map(i => {
     const prev = old[i.key] || {};
     let alerted = prev.alerted || '';
-    if (!alerted && i.severity !== 'INFO' && !prev.resolved) { toAlert.push(i); alerted = 'Yes'; }
+    if (!alerted && i.severity !== 'INFO' && !prev.resolved) {
+      if (String(i.day) >= oldest) { toAlert.push(i); alerted = 'Yes'; }
+      else alerted = 'Old — not sent';                            // purana masla: DM nahi, sirf is tab mein
+    }
     return [i.key, i.day, i.name, i.severity, i.problem, i.text || '', i.link || '', alerted, !!prev.resolved];
   });
   rows.sort((a, b) => (a[8] === b[8] ? (a[1] < b[1] ? 1 : -1) : (a[8] ? 1 : -1)));
@@ -689,7 +703,7 @@ function buildReport(rows, nowMs, empRows) {
   rows.forEach((r, i) => {
     let ts = String(r[R.TS] || '').trim();
     const name = r[R.NAME], uid = r[R.UID] || nameToUid[name] || name;
-    if (CONFIG.IGNORE_SLACK_IDS.indexOf(String(r[R.UID])) >= 0) {        // owner: koi hisaab, warning, alert nahi
+    if (isIgnored_(r[R.UID], name)) {                                    // owner: koi hisaab, warning, alert nahi
       rawDayTime.push([r[R.DAY], r[R.TIME]]); rawNotes.push(['Ignored (owner)']); rawTs.push([ts]); return;
     }
     const manType = String(r[R.MAN_TYPE] || '').trim().toUpperCase();
