@@ -305,6 +305,7 @@ function login(){
     const res = await api({ action:"login", id, pass });
     if(!res.ok){ forgetLogin("ot-emp"); return ($("result").innerHTML = notice(res.error || "Login failed")); }
     rememberLogin("ot-emp", { id, pass });
+    rememberLogin("ot-emp-data", res.employee);
     showEmployee(res.employee);
     startAutoRefresh(id, pass, res.employee);
   });
@@ -316,11 +317,55 @@ function login(){
 function rememberLogin(key, v){ try{ sessionStorage.setItem(key, JSON.stringify(v)); }catch(e){} }
 function forgetLogin(key){ try{ sessionStorage.removeItem(key); }catch(e){} }
 function savedLogin(key){ try{ return JSON.parse(sessionStorage.getItem(key) || "null"); }catch(e){ return null; } }
-function signOut(){ forgetLogin("ot-emp"); forgetLogin("ot-admin"); location.reload(); }
+function signOut(){ ["ot-emp", "ot-emp-data", "ot-admin", "ot-admin-data", "ot-view"].forEach(forgetLogin); location.reload(); }
+
+/* Refresh par wahi screen: kaun sa tab khula tha + kahan tak scroll kiya tha */
+function saveView(){
+  if(!savedLogin("ot-emp") && !savedLogin("ot-admin")) return;
+  const tabs = ["mainNav", "hrNav", "otSeg", "lvSeg"].map(id => [id, $(id) ? $(id).dataset.active : "0"]);
+  const open = [...document.querySelectorAll(".emp.open")].map(el => el.dataset.q);
+  rememberLogin("ot-view", { tabs, open, y: window.scrollY });
+}
+function restoreView(){
+  const v = savedLogin("ot-view"); if(!v) return;
+  (v.tabs || []).forEach(([id, i]) => { if(i && i !== "0" && $(id)) $(id).querySelector(`button[data-i="${i}"]`)?.click(); });
+  (v.open || []).forEach(q => document.querySelectorAll(".emp").forEach(el => { if(el.dataset.q === q) el.classList.add("open"); }));
+  requestAnimationFrame(() => requestAnimationFrame(() => window.scrollTo(0, v.y || 0)));
+}
+window.addEventListener("beforeunload", saveView);
+window.addEventListener("pagehide", saveView);
+
 window.addEventListener("DOMContentLoaded", () => {
   const e = savedLogin("ot-emp"), a = savedLogin("ot-admin");
-  if(e && $("empId") && $("code")){ $("empId").value = e.id; $("code").value = e.pass; login(); }
-  else if(a && $("adminUser") && $("adminPass")){ $("adminUser").value = a.user; $("adminPass").value = a.pass; checkAdmin(); }
+  if(e && $("empId")){                                     // employee: login screen dikhaye baghair wapas
+    document.querySelectorAll(".login-only").forEach(el => el.hidden = true);
+    const cached = savedLogin("ot-emp-data");
+    if(cached){
+      showEmployee(cached); restoreView();
+      startAutoRefresh(e.id, e.pass, cached);
+      refreshEmployee();                                    // peeche se taaza data
+    } else {
+      $("result").innerHTML = `<p class="empty-note"><span class="spinner"></span>Loading…</p>`;
+      api({ action:"login", id: e.id, pass: e.pass }).then(res => {
+        if(!res.ok){ signOut(); return; }
+        rememberLogin("ot-emp-data", res.employee);
+        showEmployee(res.employee); restoreView(); startAutoRefresh(e.id, e.pass, res.employee);
+      });
+    }
+  } else if(a && $("adminUser")){                          // admin: same
+    document.querySelectorAll(".login-only").forEach(el => el.hidden = true);
+    const cached = savedLogin("ot-admin-data");
+    const show = d => { data = d.employees || {}; adminIssues = d.issues || []; showAdminData(); restoreView(); };
+    if(cached) show(cached);
+    else $("adminResult").innerHTML = `<p class="empty-note"><span class="spinner"></span>Loading…</p>`;
+    api({ action:"admin", user: a.user, pass: a.pass }).then(res => {
+      if(!res.ok){ if(!cached) signOut(); return; }
+      const fresh = { employees: res.employees || {}, issues: res.issues || [] };
+      if(!cached || JSON.stringify(fresh) !== JSON.stringify(cached)){
+        saveView(); rememberLogin("ot-admin-data", fresh); show(fresh);
+      }
+    });
+  }
 });
 
 /* ---------- Auto refresh: har 30 second check, naya Slack data aaye to screen update ----------
@@ -344,6 +389,7 @@ async function refreshEmployee(){
     const sig = sigOf(res.employee);
     if(sig === session.sig) return;                  // kuch naya nahi
     session.sig = sig;
+    rememberLogin("ot-emp-data", res.employee);
     const tabs = ["mainNav", "hrNav", "otSeg", "lvSeg"].map(id => [id, $(id) ? $(id).dataset.active : "0"]);
     const y = window.scrollY;
     showEmployee(res.employee);
@@ -394,6 +440,7 @@ function checkAdmin(){
     const res = await api({ action:"admin", user, pass });
     if(!res.ok){ forgetLogin("ot-admin"); return ($("adminResult").innerHTML = notice(res.error || "Invalid admin credentials")); }
     rememberLogin("ot-admin", { user, pass });
+    rememberLogin("ot-admin-data", { employees: res.employees || {}, issues: res.issues || [] });
     data = res.employees || {};
     adminIssues = res.issues || [];
     showAdminData();

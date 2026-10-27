@@ -752,3 +752,4 @@ a.badge{text-decoration:none;}
 .lock-clock .time .ampm{font-size:.3em; font-weight:600; letter-spacing:0; margin-left:.2em; opacity:.8;}
 /* minus balance (short time) */
 .pbar.red i{background:linear-gradient(90deg, var(--orange), var(--red));}
+.empty-note .spinner{border-color:var(--text-3); border-right-color:transparent; vertical-align:-3px; margin-right:8px;}
