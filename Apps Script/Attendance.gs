@@ -49,6 +49,7 @@ const CONFIG = {
   NIGHT_CHECK: '23:00',                      // is waqt tak check out nahi -> "overtime kar rahe hain?" tag
   HR_NAMES: 'HR ya Haseeb bhai',             // messages mein sirf naam (tag nahi)
   SEND_EMPLOYEE_MESSAGES: true,              // false = employees ko koi channel message / DM nahi
+  IGNORE_SLACK_IDS: ['U0A5NCZM50F', 'U0BF2L9K3RU'],   // Haseeb Arshad (owner) + MacMini: in ke messages bilkul nahi gine jate
 
   TYPED_TIME_MAX_BACK_MINUTES: 180,          // message mein likha time max kitna purana ho sakta hai
   TYPED_TIME_MAX_BACK_CHECKOUT_MINUTES: 12 * 60, // check out par likha time (raat ko "Checkout (9:30)") 12 ghante tak
@@ -688,6 +689,9 @@ function buildReport(rows, nowMs, empRows) {
   rows.forEach((r, i) => {
     let ts = String(r[R.TS] || '').trim();
     const name = r[R.NAME], uid = r[R.UID] || nameToUid[name] || name;
+    if (CONFIG.IGNORE_SLACK_IDS.indexOf(String(r[R.UID])) >= 0) {        // owner: koi hisaab, warning, alert nahi
+      rawDayTime.push([r[R.DAY], r[R.TIME]]); rawNotes.push(['Ignored (owner)']); rawTs.push([ts]); return;
+    }
     const manType = String(r[R.MAN_TYPE] || '').trim().toUpperCase();
     const manTime = String(r[R.MAN_TIME] || '').trim();
     const notes = [];
@@ -1228,8 +1232,8 @@ function planNotices(records, plan, lateInformed, leaveDays, nowMs) {
     if (rec && !rec.final && (rec.status === 'On break' || rec.status === 'At namaz') && rec.lastOutMs) {
       const due = rec.lastOutMs + CONFIG.BREAK_REMIND_MINUTES * 60000;
       if (nowMs >= due && nowMs < due + 2 * 3600000) {
-        out.push({ key: 'BREAK|' + id + '|' + rec.lastOutMs, day: today, id: id, type: 'BREAK', to: 'channel',
-          text: `⚠️ ${tag(id)} aap ne ${rec.status === 'At namaz' ? 'namaz' : 'break'} ke baad check in nahi kiya, ya aap ka break time over ho gaya hai. Kindly check karein ya ${HR} ko inform karein.` });
+        out.push({ key: 'BREAK|' + id + '|' + rec.lastOutMs, day: today, id: id, type: 'BREAK', to: 'dm',     // sirf usi ko DM
+          text: `⚠️ Aap ne ${rec.status === 'At namaz' ? 'namaz' : 'break'} (${fmtTime12(rec.lastOutMs)}) ke baad check in nahi kiya, ya aap ka break time over ho gaya hai. Kindly #daily-check-in mein check in karein ya ${HR} ko inform karein.` });
       }
     }
     // ---- RAAT 11 baje tak check out nahi ----
