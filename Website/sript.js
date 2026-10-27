@@ -303,15 +303,29 @@ function login(){
     const pass = $("code").value.trim();
     if(!id || !pass) return ($("result").innerHTML = notice("Enter your ID and password"));
     const res = await api({ action:"login", id, pass });
-    if(!res.ok) return ($("result").innerHTML = notice(res.error || "Login failed"));
+    if(!res.ok){ forgetLogin("ot-emp"); return ($("result").innerHTML = notice(res.error || "Login failed")); }
+    rememberLogin("ot-emp", { id, pass });
     showEmployee(res.employee);
     startAutoRefresh(id, pass, res.employee);
   });
 }
 
-/* ---------- Auto refresh: har minute check, naya Slack data aaye to screen update ----------
-   (Slack message -> ~1 minute mein Sheet -> ~1 minute mein yahan) */
-const REFRESH_MS = 60 * 1000;
+/* ---------- Refresh par sign out na ho ----------
+   Login sirf is browser TAB mein yaad rehta hai (sessionStorage): tab band = sign out.
+   "Sign out" dabane par bhi mit jata hai. */
+function rememberLogin(key, v){ try{ sessionStorage.setItem(key, JSON.stringify(v)); }catch(e){} }
+function forgetLogin(key){ try{ sessionStorage.removeItem(key); }catch(e){} }
+function savedLogin(key){ try{ return JSON.parse(sessionStorage.getItem(key) || "null"); }catch(e){ return null; } }
+function signOut(){ forgetLogin("ot-emp"); forgetLogin("ot-admin"); location.reload(); }
+window.addEventListener("DOMContentLoaded", () => {
+  const e = savedLogin("ot-emp"), a = savedLogin("ot-admin");
+  if(e && $("empId") && $("code")){ $("empId").value = e.id; $("code").value = e.pass; login(); }
+  else if(a && $("adminUser") && $("adminPass")){ $("adminUser").value = a.user; $("adminPass").value = a.pass; checkAdmin(); }
+});
+
+/* ---------- Auto refresh: har 30 second check, naya Slack data aaye to screen update ----------
+   (Slack message -> ~1 minute mein Sheet -> 30 second mein yahan) */
+const REFRESH_MS = 30 * 1000;      // har 30 second naya data check
 let session = null;
 const sigOf = e => JSON.stringify([e.attendance, e.overtime, e.leaves, e.extraLeaves, e.extraManual]);
 function startAutoRefresh(id, pass, emp){
@@ -360,7 +374,7 @@ function showEmployee(emp){
       <div id="vLeaves">${viewLeaves(emp, s, m)}</div>
       <div id="vHours" hidden></div>
 
-      <button class="logout" onclick="location.reload()">Sign out</button>
+      <button class="logout" onclick="signOut()">Sign out</button>
     </div>`;
   mountHours(m, $("vHours"));
   wireSegmented("lvSeg", ["paneUsed", "paneExtra"]);
@@ -376,8 +390,10 @@ function showEmployee(emp){
 function checkAdmin(){
   const btn = document.querySelector("button.primary");
   withLoading(btn, "Checking…", async () => {
-    const res = await api({ action:"admin", user:$("adminUser").value.trim(), pass:$("adminPass").value.trim() });
-    if(!res.ok) return ($("adminResult").innerHTML = notice(res.error || "Invalid admin credentials"));
+    const user = $("adminUser").value.trim(), pass = $("adminPass").value.trim();
+    const res = await api({ action:"admin", user, pass });
+    if(!res.ok){ forgetLogin("ot-admin"); return ($("adminResult").innerHTML = notice(res.error || "Invalid admin credentials")); }
+    rememberLogin("ot-admin", { user, pass });
     data = res.employees || {};
     adminIssues = res.issues || [];
     showAdminData();
@@ -442,7 +458,7 @@ function showAdminData(){
           </div>`;
         }).join("")}
       </div>
-      <button class="logout" onclick="location.reload()">Sign out</button>
+      <button class="logout" onclick="signOut()">Sign out</button>
     </div>`;
 
   $("empSearch").oninput = e => {

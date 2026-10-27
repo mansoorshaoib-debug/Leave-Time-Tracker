@@ -45,9 +45,9 @@ const CONFIG = {
 
   // ---- Reminders / warnings (channel mein employee ko tag, aur DM) ----
   LATE_AFTER: '12:10',                       // is ke baad check in = late (Mon–Sat; Sunday/chutti par nahi)
-  BREAK_REMIND_MINUTES: 60,                  // break / namaz ke baad itni der check in nahi -> tag
+  BREAK_REMIND_MINUTES: 10,                  // break / namaz ke baad itni der check in nahi -> message
   NIGHT_CHECK: '23:00',                      // is waqt tak check out nahi -> "overtime kar rahe hain?" tag
-  HR_NAMES: 'HR ya Haseeb bhai',             // messages mein sirf naam (tag nahi)
+  HR_NAMES: 'HR or Manager',                 // messages mein sirf naam (tag nahi)
   SEND_EMPLOYEE_MESSAGES: true,              // false = employees ko koi channel message / DM nahi
   IGNORE_SLACK_IDS: ['U0A5NCZM50F', 'U0BF2L9K3RU'],   // Haseeb Arshad (owner) + MacMini: in ke messages bilkul nahi gine jate
   IGNORE_NAMES: ['Haseeb Arshad', 'Haseeb', 'MacMini'],  // naam se bhi (Slack naam ya Employees tab ka ID)
@@ -1206,7 +1206,9 @@ function normDate_(v) {
   return '';
 }
 
-/** Pure: abhi kaun se messages banne chahiyein (duplicate check baad mein) */
+/** Pure: abhi kaun se messages banne chahiyein (duplicate check baad mein). Saare messages English mein.
+ *  Channel (@tag): LATE, LATE_REPEAT, BREAK, NIGHT, NOT_COUNTED, EARNED (shabash)
+ *  DM:             SHORT (har short din; agla din bhi short = total ke sath), CUT (−1 paid leave) */
 function planNotices(records, plan, lateInformed, leaveDays, nowMs) {
   const out = [];
   const today = workdayOf(nowMs);
@@ -1217,69 +1219,88 @@ function planNotices(records, plan, lateInformed, leaveDays, nowMs) {
     if (r.uid && String(r.uid).indexOf('U') === 0) uidOf[r.id] = r.uid;
     if (!lastSeen[r.id] || r.day > lastSeen[r.id]) lastSeen[r.id] = r.day;
   });
+  // har employee ka abhi ka time balance (sab se naya mahina)
+  const balance = {}, balMonth = {};
+  (plan && plan.months || []).forEach(m => {
+    const id = String(m[OTM.ID]), mo = String(m[OTM.MONTH]);
+    if (!balMonth[id] || mo > balMonth[id]) { balMonth[id] = mo; balance[id] = Number(m[OTM.COUT]) || 0; }
+  });
   const tag = id => '<@' + uidOf[id] + '>';
   const onLeave = (id, day) => !!(leaveDays[id] && leaveDays[id][day]);
   const working = (id, day) => !isOffDay_(day) && !onLeave(id, day);
+  const prevWorking = (id, day) => { let p = addDaysStr_(day, -1), g = 0; while (g++ < 10 && !working(id, p)) p = addDaysStr_(p, -1); return p; };
   const HR = CONFIG.HR_NAMES;
   const active = Object.keys(uidOf).filter(id => lastSeen[id] >= addDaysStr_(today, -14));   // pichle 14 din mein aaya
 
   active.forEach(id => {
     const rec = byKey[id + '|' + today];
-    // ---- LATE (12:10 ke baad, Mon–Sat, chutti nahi, bataya nahi) ----
-    const cut = lateCutoffMs_(today), night = dayMs_(today, CONFIG.NIGHT_CHECK);
+    // ---- LATE (12:10 ke baad, Mon–Sat, chutti nahi, bataya nahi) -> channel ----
+    const cut = lateCutoffMs_(today);
     if (working(id, today) && nowMs >= cut && nowMs < cut + 2 * 3600000 && !lateInformed[id + '|' + today]) {
-      const lateToday = !rec || !rec.firstInMs || rec.firstInMs > cut;
-      if (lateToday) {
-        let prev = addDaysStr_(today, -1), guard = 0;
-        while (guard++ < 10 && !working(id, prev)) prev = addDaysStr_(prev, -1);
-        const pr = byKey[id + '|' + prev];
+      if (!rec || !rec.firstInMs || rec.firstInMs > cut) {
+        const prev = prevWorking(id, today), pr = byKey[id + '|' + prev];
         const prevLate = pr && pr.firstInMs > lateCutoffMs_(prev) && !lateInformed[id + '|' + prev];
         const text = prevLate
-          ? `⚠️ ${tag(id)} aap daily late aa rahe hain, yeh routine sahi nahi hai. Meharbani kar ke is routine ko sahi karein. Shukriya.`
+          ? `⚠️ ${tag(id)} you have been late repeatedly. This routine is not acceptable, please correct it. Thank you.`
           : rec && rec.firstInMs
-            ? `⚠️ ${tag(id)} aap aaj late aaye (${fmtTime12(rec.firstInMs)}). Kindly ${HR} ko inform karein.`
-            : `⚠️ ${tag(id)} aap ne abhi tak check in nahi kiya (late arrival). Kindly check in karein ya ${HR} ko inform karein.`;
+            ? `⚠️ ${tag(id)} you checked in late today (${fmtTime12(rec.firstInMs)}). If you are late, inform ${HR}.`
+            : `⚠️ ${tag(id)} you haven't checked in yet. If you are late, inform ${HR}.`;
         out.push({ key: 'LATE|' + id + '|' + today, day: today, id: id, type: prevLate ? 'LATE_REPEAT' : 'LATE', to: 'channel', text: text });
       }
     }
-    // ---- BREAK / NAMAZ 1 ghanta ----
+    // ---- BREAK / NAMAZ 1 ghanta -> channel ----
     if (rec && !rec.final && (rec.status === 'On break' || rec.status === 'At namaz') && rec.lastOutMs) {
       const due = rec.lastOutMs + CONFIG.BREAK_REMIND_MINUTES * 60000;
       if (nowMs >= due && nowMs < due + 2 * 3600000) {
-        out.push({ key: 'BREAK|' + id + '|' + rec.lastOutMs, day: today, id: id, type: 'BREAK', to: 'dm',     // sirf usi ko DM
-          text: `⚠️ Aap ne ${rec.status === 'At namaz' ? 'namaz' : 'break'} (${fmtTime12(rec.lastOutMs)}) ke baad check in nahi kiya, ya aap ka break time over ho gaya hai. Kindly #daily-check-in mein check in karein ya ${HR} ko inform karein.` });
+        const nowT = fmtTime12(nowMs).replace(/ [AP]M$/, '');
+        out.push(rec.status === 'At namaz'
+          ? { key: 'BREAK|' + id + '|' + rec.lastOutMs, day: today, id: id, type: 'NAMAZ', to: 'dm',          // namaz: sirf DM
+              text: `⏰ ${id}, your namaz time is over. Did you check in? If you're back, please check in with your time, e.g. Check in (${nowT}). Please take care of your check in / check out.` }
+          : { key: 'BREAK|' + id + '|' + rec.lastOutMs, day: today, id: id, type: 'BREAK', to: 'channel',       // break: channel
+              text: `⏰ ${tag(id)} your break time is over. If you're in the office, please check in with your time, e.g. Check in (${nowT}). If not, please come back.` });
       }
     }
-    // ---- RAAT 11 baje tak check out nahi ----
+    // ---- RAAT 11 baje tak check out nahi -> channel ----
     if (rec && !rec.final && rec.status === 'Working now' && nowMs >= dayMs_(today, CONFIG.NIGHT_CHECK)) {
       out.push({ key: 'NIGHT|' + id + '|' + today, day: today, id: id, type: 'NIGHT', to: 'channel',
-        text: `${tag(id)} aap ne check out nahi kiya. Kya aap overtime kar rahe hain? Agar haan, to kaam khatam kar ke check out karein. Agar nahi, to jis time nikle the woh time likh kar check out karein, jaise: Checkout (9:30)` });
+        text: `${tag(id)} you haven't checked out yet. Are you working overtime? If yes, please check out when you finish. If not, please check out with the time you left, e.g. Checkout (9:30).` });
     }
-    // ---- Kal ka din gina nahi gaya (check out nahi) -> DM ----
+    // ---- Kal ka din gina nahi gaya (check out nahi) -> channel ----
     const yday = addDaysStr_(today, -1), yr = byKey[id + '|' + yday];
     if (yr && yr.status === 'Incomplete') {
-      out.push({ key: 'NOTCOUNTED|' + id + '|' + yday, day: yday, id: id, type: 'NOT_COUNTED', to: 'dm',
-        text: `Aap ka ${niceDate_(yday)} ka time gina nahi gaya kyun ke check out nahi tha. Meharbani kar ke ${HR} se raabta kar ke isay sahi karwayein, aur next time khayal rakhein.` });
+      out.push({ key: 'NOTCOUNTED|' + id + '|' + yday, day: yday, id: id, type: 'NOT_COUNTED', to: 'channel',
+        text: `⚠️ ${tag(id)} your working time for ${niceDate_(yday)} was not counted because you didn't check out. Please contact ${HR} to fix it, and remember to check out next time.` });
     }
+    // ---- SHORT time (kal / aaj ka poora hua din) -> DM ----
+    [yday, today].forEach(d => {
+      const r = byKey[id + '|' + d];
+      if (!r || !r.final || !(r.short > 0) || d < CONFIG.OVERTIME_START_DATE) return;
+      const pd = prevWorking(id, d), pr = byKey[id + '|' + pd];
+      const again = pr && pr.final && pr.short > 0 && pd >= CONFIG.OVERTIME_START_DATE;
+      const bal = balance[id] || 0;
+      const head = `⏱️ ${id}, aap ka ${niceDate_(d)} ka ${fmtDur(r.short)} time short hai`;
+      const text = bal >= 0
+        ? `${head}, lekin aap ke overtime se cover ho gaya (baqi overtime: ${fmtDur(bal)}).`
+        : again
+          ? `${head}. Lagatar short ho raha hai, aap ka total short time ${fmtDur(-bal)} hai. Please is ko dekhen, is se aap ki paid leave affect ho rahi hai (har 8 ghante short = 1 paid leave).`
+          : `${head}.`;
+      out.push({ key: 'SHORT|' + id + '|' + d, day: d, id: id, type: again ? 'SHORT_AGAIN' : 'SHORT', to: 'dm', text: text });
+    });
   });
 
-  // ---- Leaves: +1 mili / −1 kati, aur balance minus mein gaya -> DM ----
+  // ---- Leaves: +1 mili -> channel (shabash) · −1 kati -> DM ----
   const seen = {};
   (plan && plan.events || []).forEach(r => {
     const id = String(r[EAR.ID]), day = String(r[EAR.DATE]);
     if (!uidOf[id] || day < recent || day < CONFIG.OVERTIME_START_DATE) return;
     const type = String(r[EAR.TYPE] || '') === 'Cut' || Number(r[EAR.LEAVES]) < 0 ? 'CUT' : 'EARNED';
     const k = id + '|' + day + '|' + type; seen[k] = (seen[k] || 0) + 1;
-    const after = fmtDur(Number(r[EAR.AFTER]) || 0);
-    out.push({ key: type + '|' + k + '|' + seen[k], day: day, id: id, type: type, to: 'dm',
-      text: type === 'EARNED'
-        ? `🎉 Mubarak ho! Aap ka overtime 8 ghante poora ho gaya, aap ko 1 extra leave mil gayi (${niceDate_(day)}). Baqi overtime balance: ${after}. Shabash, aise hi lage rahein!`
-        : `⚠️ Aap ka short time 8 ghante ho gaya, is liye 1 paid leave kat gayi (${niceDate_(day)}). Balance ab: ${after}. Overtime kar ke time wapas cover kar sakte hain.` });
-  });
-  (plan && plan.warnings || []).forEach(w => {
-    if (!uidOf[w.id] || w.day < recent) return;
-    out.push({ key: 'NEGATIVE|' + w.id + '|' + w.day, day: w.day, id: w.id, type: 'NEGATIVE', to: 'dm',
-      text: `⚠️ Aap ka time balance minus mein chala gaya (${fmtDur(w.after)}). Minus 8 ghante hone par 1 paid leave kat jayegi, apni paid leave bacha lein bhai 🙂 Thora overtime kar ke yeh time wapas pura ho jata hai.` });
+    const after = Number(r[EAR.AFTER]) || 0;
+    out.push(type === 'EARNED'
+      ? { key: 'EARNED|' + k + '|' + seen[k], day: day, id: id, type: 'EARNED', to: 'channel',
+          text: `🎉 Well done ${tag(id)}! You completed 8 hours of overtime and earned 1 extra paid leave. Keep up the great work! 💪` }
+      : { key: 'CUT|' + k + '|' + seen[k], day: day, id: id, type: 'CUT', to: 'dm',
+          text: `⚠️ ${id}, aap ka short time 8 ghante ho gaya, is liye 1 paid leave kat gayi (${niceDate_(day)}). Extra time de kar aage ka short time pura kar sakte hain, taake aur leave na kate.` });
   });
   out.forEach(n => { n.uid = uidOf[n.id]; });
   return out;
@@ -1322,7 +1343,7 @@ function nextReminderMs(records, nowMs) {
   times.push(dayMs_(addDaysStr_(today, 1), '05:05'));                   // din badla -> "gina nahi gaya" DM
   records.forEach(r => {
     if (r.day === today && !r.final && (r.status === 'On break' || r.status === 'At namaz') && r.lastOutMs)
-      times.push(r.lastOutMs + CONFIG.BREAK_REMIND_MINUTES * 60000 + 30000);
+      times.push(r.lastOutMs + CONFIG.BREAK_REMIND_MINUTES * 60000 + 5000);
   });
   const future = times.filter(t => t > nowMs + 30000).sort((a, b) => a - b);
   return future.length ? future[0] : 0;
