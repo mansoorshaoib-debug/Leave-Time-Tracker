@@ -384,7 +384,7 @@ async function refreshEmployee(){
   if(!session || document.hidden || session.busy) return;
   session.busy = true;
   try{
-    const res = await api({ action:"login", id: session.id, pass: session.pass });
+    const res = await api({ action:"login", id: session.id, pass: session.pass, refresh: true });
     if(!res.ok || !res.employee) return;
     const sig = sigOf(res.employee);
     if(sig === session.sig) return;                  // kuch naya nahi
@@ -538,6 +538,7 @@ const ATT = {
   OFF_DAYS: [0],                  // 0 = Sunday
   PER_LEAVE: 480,                 // 8h overtime = 1 extra leave
   ALLOWED_BREAK: 60,              // Attendance.gs ALLOWED_BREAK_MINUTES (sirf dikhane ke liye)
+  GRACE: 10,                      // Attendance.gs GRACE_MINUTES: 1h 10m tak break = 1h
   OT_START: "2026-10-24",         // overtime / short ISI DIN se (Attendance.gs OVERTIME_START_DATE jaisa)
   NAMAZ_COUNTS_AS_WORK: true,     // Attendance.gs CONFIG ke sath same rakhein (9h office = 8h kaam + 1h break)
   SHORT_REDUCES_OVERTIME: true,   // Attendance.gs CONFIG ke sath same rakhein
@@ -604,7 +605,8 @@ function makeDay(d, r, leave, flags){
   const day = { d, key: ymd(d), off, r, leave, isToday: !!flags.today, preStart: ymd(d) < ATT.OT_START,
     work: 0, brk: 0, namaz: 0, ot: 0, short: 0, required: 0, net: 0, final: false };
   if(r){
-    Object.assign(day, { work: r.work, brk: r.brk, namaz: r.namaz, firstIn: r.firstIn, lastOut: r.lastOut, late: r.late || "" });
+    Object.assign(day, { work: r.work, brk: r.brk, namaz: r.namaz, firstIn: r.firstIn, lastOut: r.lastOut, late: r.late || "",
+      startGrace: num(r.startGrace), breakGrace: num(r.breakGrace) });
     day.required = r.required != null ? r.required : (off ? 0 : ATT.TARGET);
     if(r.final){
       day.final = true;
@@ -751,7 +753,8 @@ function sumPanel(t){
 function breakNamaz(brk, namaz, days, single){
   const avg = v => !single && days ? `<small class="bn-sub">avg ${fmtMin(v / days)} / day</small>` : "";
   const over = !single ? ""
-    : brk > ATT.ALLOWED_BREAK ? `<small class="bn-sub neg">${fmtMin(brk - ATT.ALLOWED_BREAK)} over ${fmtMin(ATT.ALLOWED_BREAK)} allowed</small>`
+    : brk > ATT.ALLOWED_BREAK + ATT.GRACE ? `<small class="bn-sub neg">${fmtMin(brk - ATT.ALLOWED_BREAK)} over ${fmtMin(ATT.ALLOWED_BREAK)} allowed</small>`
+    : brk > ATT.ALLOWED_BREAK ? `<small class="bn-sub">counted as ${fmtMin(ATT.ALLOWED_BREAK)} (${ATT.GRACE}m grace)</small>`
     : `<small class="bn-sub">${fmtMin(ATT.ALLOWED_BREAK)} allowed</small>`;
   return `
     <div class="bn2">
@@ -857,13 +860,20 @@ function dayCalc(t){
     rows.push(`<div><span>From first check-in to last check-out<br><small>${esc(t.firstIn)} → ${esc(t.lastOut)}</small></span><b>${fmtMin(span)}</b></div>`);
     if(t.brk) rows.push(`<div><span>Break (not counted)</span><b>−${fmtMin(t.brk)}</b></div>`);
     if(t.namaz && !ATT.NAMAZ_COUNTS_AS_WORK) rows.push(`<div><span>Namaz (not counted)</span><b>−${fmtMin(t.namaz)}</b></div>`);
-    const away = span - Math.round(t.work) - Math.round(t.brk) - (ATT.NAMAZ_COUNTS_AS_WORK ? 0 : Math.round(t.namaz));
+    const grace = Math.round(t.startGrace || 0) + Math.round(t.breakGrace || 0);
+    const away = span + grace - Math.round(t.work) - Math.round(t.brk) - (ATT.NAMAZ_COUNTS_AS_WORK ? 0 : Math.round(t.namaz));
     if(away >= 3) rows.push(`<div><span>Other time checked out</span><b>−${fmtMin(away)}</b></div>`);
   } else if(t.kind === "live"){
     rows.push(`<div><span>Checked in at</span><b>${esc(t.firstIn || "—")}</b></div>`);
     if(t.brk) rows.push(`<div><span>Break so far (not counted)</span><b>−${fmtMin(t.brk)}</b></div>`);
     if(t.namaz && !ATT.NAMAZ_COUNTS_AS_WORK) rows.push(`<div><span>Namaz so far (not counted)</span><b>−${fmtMin(t.namaz)}</b></div>`);
   }
+  if(t.startGrace >= 1){
+    const fm = clockMin(t.firstIn), st = fm == null ? null : fm - Math.round(t.startGrace);
+    const startTxt = st == null ? "" : `${(Math.floor(st / 60) % 12) || 12}:${String(st % 60).padStart(2, "0")} ${st < 720 ? "AM" : "PM"}`;
+    rows.push(`<div><span>Grace: arrived ${esc(t.firstIn)}, counted from ${startTxt}</span><b class="pos">+${fmtMin(t.startGrace)}</b></div>`);
+  }
+  if(t.breakGrace >= 1) rows.push(`<div><span>Break grace: ${fmtMin(t.brk)} break counted as ${fmtMin(ATT.ALLOWED_BREAK)}</span><b class="pos">+${fmtMin(t.breakGrace)}</b></div>`);
   rows.push(`<div class="hl"><span>Worked${t.kind === "live" ? " so far" : ""}${t.namaz && ATT.NAMAZ_COUNTS_AS_WORK ? `<br><small>includes namaz ${fmtMin(t.namaz)}</small>` : ""}</span><b>${fmtMin(t.work)}</b></div>`);
   rows.push(`<div><span>Required${t.off ? " (Sunday — weekly off)" : ""}</span><b>−${fmtMin(t.required)}</b></div>`);
   let end, note = "";
