@@ -1354,10 +1354,11 @@ function mountDaily(m, el){
     const isToday = ymd(cur) === ymd(m.today);
     const statusText = t.kind === "live" ? t.liveStatus : t.kind === "notyet" ? "Not checked in yet" : (KIND[t.kind] || "No record");
     const req = t.required || 0, rel = t.liveRelief || 0;
-    const pct = req ? t.work / Math.max(1, req - rel) : (t.work ? 1 : 0);
+        const shown = t.work + rel;                                   // relief ghanton mein jud jata hai
+    const pct = req ? shown / req : (t.work ? 1 : 0);
     const ring = t.off && !t.r
       ? progressRing(0, "var(--green)", "Off", "Sunday")
-      : progressRing(pct, pct >= 1 ? "var(--green)" : "var(--blue)", fmtMin(t.work), req ? `of ${fmtMin(req - rel)}` : "Sunday");
+      : progressRing(pct, pct >= 1 ? "var(--green)" : "var(--blue)", fmtMin(shown), req ? `of ${fmtMin(req)}` : "Sunday");
     el.innerHTML = `
       <div class="navrow">
         <button type="button" class="nb" data-d="-1" aria-label="Previous day">‹</button>
@@ -1371,7 +1372,7 @@ function mountDaily(m, el){
           <div class="facts">
             <div><small>Check in</small><b>${esc(t.firstIn || "—")}</b></div>
             <div><small>Last check-out</small><b>${esc(t.lastOut || "—")}</b></div>
-            <div><small>Required</small><b>${t.r || t.kind === "notyet" ? (req ? fmtMin(req) : "0h (Sunday)") : "—"}${rel >= 1 ? ` <span class="pos rel">−${fmtMin(rel)} late relief</span>` : ""}</b></div>
+            <div><small>Required</small><b>${t.r || t.kind === "notyet" ? (req ? fmtMin(req) : "0h (Sunday)") : "—"}${rel >= 1 ? ` <span class="pos rel">+${fmtMin(rel)} late relief</span>` : ""}</b></div>
             <div><small>${t.final ? (t.net < 0 ? "Short" : "Overtime") : "Overtime"}</small><b class="${t.preStart ? "muted" : tone(t.net)}">${t.final ? (t.preStart ? "Not counted" : t.net ? signed(t.net) : "0m") : "—"}</b></div>
           </div>
         </div>
