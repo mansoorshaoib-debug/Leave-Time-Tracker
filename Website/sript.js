@@ -317,19 +317,17 @@ function login(){
 function rememberLogin(key, v){ try{ sessionStorage.setItem(key, JSON.stringify(v)); }catch(e){} }
 function forgetLogin(key){ try{ sessionStorage.removeItem(key); }catch(e){} }
 function savedLogin(key){ try{ return JSON.parse(sessionStorage.getItem(key) || "null"); }catch(e){ return null; } }
-function signOut(){ ["ot-emp", "ot-emp-data", "ot-admin", "ot-admin-data", "ot-view"].forEach(forgetLogin); location.reload(); }
+function signOut(){ ["ot-emp", "ot-emp-data", "ot-admin", "ot-admin-data", "ot-view"].forEach(forgetLogin); if(location.hash) history.replaceState(null, "", location.pathname); location.reload(); }
 
 /* Refresh par wahi screen: kaun sa tab khula tha + kahan tak scroll kiya tha */
 function saveView(){
   if(!savedLogin("ot-emp") && !savedLogin("ot-admin")) return;
-  const tabs = ["mainNav", "hrNav", "otSeg", "lvSeg"].map(id => [id, $(id) ? $(id).dataset.active : "0"]);
-  const open = [...document.querySelectorAll(".emp.open")].map(el => el.dataset.q);
-  rememberLogin("ot-view", { tabs, open, y: window.scrollY });
+  const tabs = ["mainNav", "hrNav", "otSeg", "lvSeg", "adNav", "ahNav", "alSeg"].map(id => [id, $(id) ? $(id).dataset.active : "0"]);
+  rememberLogin("ot-view", { tabs, hash: location.hash, y: window.scrollY });
 }
 function restoreView(){
   const v = savedLogin("ot-view"); if(!v) return;
   (v.tabs || []).forEach(([id, i]) => { if(i && i !== "0" && $(id)) $(id).querySelector(`button[data-i="${i}"]`)?.click(); });
-  (v.open || []).forEach(q => document.querySelectorAll(".emp").forEach(el => { if(el.dataset.q === q) el.classList.add("open"); }));
   requestAnimationFrame(() => requestAnimationFrame(() => window.scrollTo(0, v.y || 0)));
 }
 window.addEventListener("beforeunload", saveView);
@@ -356,6 +354,7 @@ window.addEventListener("DOMContentLoaded", () => {
     document.querySelectorAll(".login-only").forEach(el => el.hidden = true);
     const cached = savedLogin("ot-admin-data");
     const show = d => { data = d.employees || {}; adminIssues = d.issues || []; showAdminData(); restoreView(); };
+    if(cached) startAdminRefresh(a.user, a.pass, cached);
     if(cached) show(cached);
     else $("adminResult").innerHTML = `<p class="empty-note"><span class="spinner"></span>Loading…</p>`;
     api({ action:"admin", user: a.user, pass: a.pass }).then(res => {
@@ -364,6 +363,7 @@ window.addEventListener("DOMContentLoaded", () => {
       if(!cached || JSON.stringify(fresh) !== JSON.stringify(cached)){
         saveView(); rememberLogin("ot-admin-data", fresh); show(fresh);
       }
+      startAdminRefresh(a.user, a.pass, fresh);
     });
   }
 });
@@ -440,79 +440,515 @@ function checkAdmin(){
     const res = await api({ action:"admin", user, pass });
     if(!res.ok){ forgetLogin("ot-admin"); return ($("adminResult").innerHTML = notice(res.error || "Invalid admin credentials")); }
     rememberLogin("ot-admin", { user, pass });
-    rememberLogin("ot-admin-data", { employees: res.employees || {}, issues: res.issues || [] });
-    data = res.employees || {};
-    adminIssues = res.issues || [];
+    const d = { employees: res.employees || {}, issues: res.issues || [] };
+    rememberLogin("ot-admin-data", d);
+    data = d.employees; adminIssues = d.issues;
     showAdminData();
+    startAdminRefresh(user, pass, d);
   });
 }
 
+/* ---------------------------------------------------------
+   ADMIN PANEL
+   - Home: sab employees (aaj ka haal, leaves, overtime, loan)
+   - Kisi naam par click: sirf usi ka poora data (#emp/Naam)
+   - "All employees" / phone ka Back: wapas list
+   --------------------------------------------------------- */
+const adminRoute = () => { const h = decodeURIComponent(location.hash.replace(/^#/, "")); return h.indexOf("emp/") === 0 ? h.slice(4) : ""; };
+let listScroll = 0, openedFromList = false;
+
 function showAdminData(){
   document.querySelectorAll(".login-only").forEach(el => el.hidden = true);
-  document.querySelector(".card").classList.add("wide");
+  document.querySelector(".card").classList.add("wide", "admin");
+  renderAdmin();
+}
+function renderAdmin(){
+  const id = adminRoute();
+  if(id && data[id]) adminEmployee(id); else adminHome();
+}
+window.addEventListener("hashchange", () => {
+  if(!document.querySelector(".card.admin")) return;
+  const id = adminRoute();
+  renderAdmin();
+  if(id) window.scrollTo(0, 0);
+  else requestAnimationFrame(() => window.scrollTo(0, listScroll));
+});
+function openEmp(id){
+  listScroll = window.scrollY; openedFromList = true;
+  location.hash = "emp/" + encodeURIComponent(id);
+}
+function backToList(){
+  if(openedFromList){ openedFromList = false; history.back(); }
+  else location.hash = "";
+}
+
+/* Aaj ka haal ek chhoti chip mein */
+function todayInfo(m){
+  const t = m.todayDay;
+  const late = t.late === "Y" ? " · Late" : t.late === "Informed" ? " · Late (informed)" : "";
+  if(t.kind === "live"){
+    const s = t.liveStatus || "Working";
+    const cls = /break|namaz/i.test(s) ? "warn" : /half/i.test(s) ? "info" : "ok";
+    return { text: s + (t.firstIn ? ` · since ${t.firstIn}` : "") + late, cls, key: cls === "warn" ? "away" : cls === "ok" ? "in" : "out" };
+  }
+  if(t.final) return { text: `Checked out${t.lastOut ? " · " + t.lastOut : ""}${late}`, cls: "info", key: "out" };
+  if(t.kind === "leave") return { text: "On leave", cls: "mute", key: "leave" };
+  if(t.kind === "off") return { text: "Weekly off", cls: "mute", key: "off" };
+  if(t.kind === "notyet") return { text: "Not checked in" + (t.late === "Informed" ? " · Late (informed)" : ""), cls: "bad", key: "notin" };
+  return { text: "No record", cls: "mute", key: "notin" };
+}
+const chip = i => `<span class="chip ${i.cls}"><i></i>${esc(i.text)}</span>`;
+
+/* ---------- Loan ---------- */
+const money = n => "Rs " + Math.round(Math.abs(n)).toLocaleString("en-US");
+function loanInfo(emp){
+  const today = workToday();
+  const mk = d => d.getFullYear() * 12 + d.getMonth();
+  const rows = (emp.loans || []).map(l => {
+    const t = String(l.type || "").toLowerCase();
+    const kind = /skip/.test(t) ? "skip" : /inst|qist/.test(t) ? "inst" : /paid|pay|wapas|return|deduct|kat|cut/.test(t) ? "paid" : "loan";
+    return { ...l, kind, d: parseDate(l.date), fd: kind === "loan" ? parseDate(l.firstDue) : null, amount: Math.abs(num(l.amount)) };
+  }).filter(l => l.d).sort((a, b) => a.d - b.d || (a.row || 0) - (b.row || 0));
+  const empty = { list: [], taken: 0, paid: 0, remaining: 0, inst: 0, has: false, next: 0, months: 0, extra: 0, auto: false };
+  if(!rows.length) return empty;
+
+  const loans = rows.filter(l => l.kind === "loan");
+  const starts = loans.filter(l => l.fd).map(l => l.fd).sort((a, b) => a - b);
+  const autoStart = starts[0] || null, dueDay = autoStart ? autoStart.getDate() : 5;
+  const dueOf = m => { const y = Math.floor(m / 12), mo = m % 12; return new Date(y, mo, Math.min(dueDay, new Date(y, mo + 1, 0).getDate())); };
+  const instAt = d => {                                   // us waqt ki mahana qist
+    let v = 0;
+    rows.forEach(l => { if(l.d <= d && ((l.kind === "loan" && num(l.installment)) || l.kind === "inst")) v = l.kind === "inst" ? l.amount : Math.abs(num(l.installment)); });
+    return v;
+  };
+  const manual = new Map();                               // mahina -> Paid / Skip rows (auto ki jagah)
+  rows.filter(l => l.kind === "paid" || l.kind === "skip").forEach(l => { const k = mk(l.d); if(!manual.has(k)) manual.set(k, []); manual.get(k).push(l); });
+
+  let taken = 0, paid = 0;
+  const hist = [];
+  const first = mk(rows[0].d), last = mk(today);
+  for(let m = first; m <= last; m++){
+    rows.filter(l => mk(l.d) === m && (l.kind === "loan" || l.kind === "inst")).forEach(l => {
+      if(l.kind === "loan") taken += l.amount;
+      hist.push(l);
+    });
+    if(manual.has(m)){
+      manual.get(m).forEach(l => { if(l.kind === "paid") paid += l.amount; hist.push(l); });
+    } else if(autoStart && m >= mk(autoStart)){
+      const due = dueOf(m), bal = taken - paid, inst = instAt(due);
+      if(due <= today && bal > 0 && inst > 0){
+        const amt = Math.min(inst, bal);
+        paid += amt;
+        hist.push({ kind: "auto", d: due, date: ymd(due), amount: amt });
+      }
+    }
+  }
+  hist.sort((a, b) => a.d - b.d);
+  const remaining = Math.max(0, taken - paid);
+  const inst = instAt(today);
+  // agli qist: is mahine (agar abhi nahi kati) ya agle mahine
+  let nextDate = null;
+  if(remaining && inst){
+    let m = mk(today);
+    if(dueOf(m) <= today || manual.has(m)) m++;
+    while(manual.has(m) && m < mk(today) + 24) m++;
+    if(autoStart && m < mk(autoStart)) m = mk(autoStart);
+    nextDate = dueOf(m);
+  }
+  const lastPaid = hist.filter(h => h.kind === "paid" || h.kind === "auto").pop() || null;
+  return { list: hist, taken, paid, remaining, inst, has: true, lastPaid,
+    next: remaining ? Math.min(inst || remaining, remaining) : 0, nextDate, auto: !!autoStart, dueDay,
+    months: inst && remaining ? Math.ceil(remaining / inst) : 0,
+    extra: Math.max(0, paid - taken) };
+}
+
+function viewLoan(emp){
+  const L = loanInfo(emp);
+  if(!L.has) return `
+    <div class="list"><p class="empty-note">No loan recorded.</p></div>
+    <p class="att-note">To add a loan: Google Sheet → "Loans" tab → Employee ID · Date · Type "Loan" · Amount · Monthly Installment · First Installment date.</p>`;
+  const pct = L.taken ? Math.min(1, L.paid / L.taken) : 1;
+  const done = !L.remaining;
+  return `
+    <div class="apanel">
+      <div class="ph"><span>${done ? "Loan fully paid back" : "Loan paid back"}</span><b class="${done ? "pos" : ""}">${Math.round(pct * 100)}%</b></div>
+      <div class="pbar"><i style="width:0" data-w="${Math.round(pct * 100)}%"></i></div>
+      <div class="sum3">
+        <div><small>Total loan</small><b>${money(L.taken)}</b></div>
+        <div><small>Paid back</small><b class="pos">${money(L.paid)}</b></div>
+        <div><small>Remaining</small><b class="${L.remaining ? "neg" : "pos"}">${money(L.remaining)}</b></div>
+      </div>
+      <div class="bal">
+        <div><span>Monthly installment<br><small>${L.auto ? `Auto — cut on the ${ordinal(L.dueDay)} of every month` : "Manual — only Paid rows are counted"}</small></span><b>${L.inst ? money(L.inst) : "Not set"}</b></div>
+        ${L.remaining ? `<div class="hl"><span>Next installment${L.nextDate && L.auto ? `<br><small>${esc(L.nextDate.toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" }))}</small>` : ""}</span><b>${money(L.next)}</b></div>` : ""}
+        ${L.months ? `<div><span>Installments left (approx.)</span><b>${L.months} month${L.months > 1 ? "s" : ""}</b></div>` : ""}
+        <div><span>Last installment</span><b>${L.lastPaid ? `${money(L.lastPaid.amount)} · ${esc(shortDateOf(L.lastPaid.date))}` : "—"}</b></div>
+        ${L.extra ? `<div><span>Paid more than loan</span><b class="pos">${money(L.extra)}</b></div>` : ""}
+      </div>
+    </div>
+    <div class="sub-h">History <span class="pill">${L.list.length}</span></div>
+    <div class="list">${L.list.slice().reverse().map((l, i) => `
+      <div class="list-item" style="animation-delay:${Math.min(i, 12) * 30}ms">
+        ${calBadge(l.date, l.kind === "paid" || l.kind === "auto")}
+        <div class="li-body">
+          <div class="li-title">${{ loan: "Loan given", paid: "Installment paid (manual)", auto: "Installment cut (auto)", skip: "No installment this month", inst: "Installment changed" }[l.kind]}</div>
+          <div class="li-sub">${esc(fmtLong(l.date))}${l.kind === "loan" && num(l.installment) ? ` · ${money(l.installment)} / month` : ""}${l.kind === "loan" && l.fd ? ` · first cut ${esc(shortDateOf(l.firstDue))}` : ""}${l.note ? " · " + esc(l.note) : ""}</div>
+        </div>
+        <span class="badge ${l.kind === "loan" ? "red" : l.kind === "paid" || l.kind === "auto" ? "" : "neutral"}">${l.kind === "skip" ? "Skipped" : `${l.kind === "paid" || l.kind === "auto" ? "−" : l.kind === "loan" ? "+" : ""}${money(l.amount)}${l.kind === "inst" ? "/mo" : ""}`}</span>
+      </div>`).join("")}</div>
+    <p class="att-note">From Google Sheet → "Loans" tab. Auto installments are cut every month from the first installment date. A "Paid" or "Skip" row replaces that month's auto installment.</p>`;
+}
+const ordinal = n => n + ([11, 12, 13].includes(n % 100) ? "th" : ["th", "st", "nd", "rd"][n % 10] || "th");
+const shortDateOf = d => { const p = parseDate(d); return p ? p.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" }) : (d || "—"); };
+
+/* ---------- Mahine ke poore required ghante (Mon–Sat × 8h) + kam kyun gine gaye ---------- */
+function monthReq(m, mo){
+  const c = { days: 0, counted: 0, leave: 0, incomplete: 0, absent: 0, today: 0, upcoming: 0, nodata: 0 };
+  if(!mo) return c;
+  for(let d = new Date(mo.start); d <= mo.end; d = addDays(d, 1)){
+    if(ATT.OFF_DAYS.includes(d.getDay())) continue;
+    c.days++;
+    const x = dayAt(m, d);
+    if(x.final) c.counted++;
+    else if(x.kind === "leave") c.leave++;
+    else if(x.kind === "incomplete") c.incomplete++;
+    else if(x.kind === "absent") c.absent++;
+    else if(x.kind === "live" || x.kind === "notyet") c.today++;
+    else if(x.kind === "upcoming") c.upcoming++;
+    else c.nodata++;
+  }
+  c.required = c.days * ATT.TARGET;
+  return c;
+}
+const dd = n => `${n} day${n === 1 ? "" : "s"}`;
+/* chhota sa sabab: kyun kam gine gaye */
+const reqReason = c => [c.incomplete ? `${c.incomplete} no check-out` : "", c.absent ? `${c.absent} absent` : "",
+  c.leave ? `${c.leave} leave` : "", c.nodata ? `${c.nodata} before system` : ""].filter(Boolean).join(" · ");
+function reqPanel(c){
+  const rows = [
+    `<div><span>Counted (check in + check out)</span><b>${dd(c.counted)} · ${fmtMin(c.counted * ATT.TARGET)}</b></div>`,
+    c.leave ? `<div><span>Leave</span><b>${dd(c.leave)}</b></div>` : "",
+    c.incomplete ? `<div><span>No check-out — not counted</span><b class="neg">${dd(c.incomplete)}</b></div>` : "",
+    c.absent ? `<div><span>Absent — no check-in, no leave</span><b class="neg">${dd(c.absent)}</b></div>` : "",
+    c.nodata ? `<div><span>Before system started</span><b class="muted">${dd(c.nodata)}</b></div>` : "",
+    c.today ? `<div><span>Today (still running)</span><b>${dd(c.today)}</b></div>` : "",
+    c.upcoming ? `<div><span>Days still to come</span><b class="muted">${dd(c.upcoming)}</b></div>` : ""
+  ].filter(Boolean).join("");
+  const why = reqReason(c);
+  return `
+    <div class="bal reqbox">
+      <div class="hl"><span>Required this month<br><small>${dd(c.days)} × ${fmtMin(ATT.TARGET)} (Mon–Sat)</small></span><b>${fmtMin(c.required)}</b></div>
+      ${rows}
+    </div>
+    ${why ? `<p class="pnote">Less hours counted because: <b class="neg">${esc(why)}</b>.</p>` : ""}`;
+}
+
+/* ---------- Home: sab employees ---------- */
+function adminHome(){
   const box = $("adminResult");
   const ids = Object.keys(data).sort((a, b) => String(data[a].name || a).localeCompare(String(data[b].name || b)));
   if(!ids.length) return (box.innerHTML = `<div class="list"><p class="empty-note">No employee data loaded yet.</p></div>`);
 
-  const all = ids.map(id => ({ id, emp: data[id], s: summary(data[id]) }));
-  const totalUsed = all.reduce((t, x) => t + x.s.usedCount, 0);
-  const totalExtra = all.reduce((t, x) => t + x.s.extraAll, 0);
+  const all = ids.map(id => {
+    const emp = data[id], m = attModel(emp), s = summary(emp);
+    const cur = m.months.length ? m.months[m.months.length - 1] : null;
+    return { id, emp, m, s, today: todayInfo(m), cur, L: loanInfo(emp), rq: monthReq(m, cur) };
+  });
+  const count = k => all.filter(x => x.today.key === k).length;
+  const inNow = count("in"), away = count("away"), notIn = count("notin"), leave = count("leave");
+  const now = new Date();
 
   box.innerHTML = `
     <div class="dash">
       <div class="dash-head">
-        <div><div class="hello">Admin</div><h3>All employees</h3></div>
+        <div><div class="hello">${esc(now.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" }))}</div><h3>Team overview</h3></div>
         <div class="avatar">OT</div>
       </div>
 
-      <div class="stats-row three">
+      <div class="stats-row four">
         <div class="stat"><div class="ico" style="background:var(--blue)">${I.users}</div><span class="num count-up" data-to="${ids.length}">0</span><span class="label">Employees</span></div>
-        <div class="stat"><div class="ico" style="background:var(--orange)">${I.hour}</div><span class="num count-up" data-to="${totalUsed}">0</span><span class="label">Leaves taken</span></div>
-        <div class="stat extra"><div class="ico" style="background:var(--green)">${I.plus}</div><span class="num">+<span class="count-up" data-to="${totalExtra}">0</span></span><span class="label">Extra earned</span></div>
+        <div class="stat"><div class="ico" style="background:var(--green)">${I.check}</div><span class="num count-up" data-to="${inNow}">0</span><span class="label">Working now</span></div>
+        <div class="stat"><div class="ico" style="background:var(--orange)">${I.hour}</div><span class="num count-up" data-to="${away}">0</span><span class="label">Break / namaz</span></div>
+        <div class="stat"><div class="ico" style="background:var(--red)">${I.cal}</div><span class="num count-up" data-to="${notIn + leave}">0</span><span class="label">Not in${leave ? ` · ${leave} on leave` : ""}</span></div>
       </div>
 
-      ${otNotice()}
+      <label class="search">${I.search}<input id="empSearch" type="search" placeholder="Search employee" autocomplete="off"></label>
+
+      <div class="elist" id="empList">
+        <div class="ehead" aria-hidden="true"><span></span><span>Employee · today</span><span>Leaves left</span><span>Overtime</span><span>This month</span><span>Loan left</span><span></span></div>
+        ${all.map(({ id, emp, m, s, today, cur, L, rq }, i) => `
+          <button type="button" class="erow" data-id="${esc(id)}" data-q="${esc(((emp.name || "") + " " + id).toLowerCase())}" style="animation-delay:${Math.min(i, 14) * 30}ms">
+            <span class="avatar">${esc(initials(emp.name || id))}</span>
+            <span class="ename"><b>${esc(emp.name || id)}</b>${chip(today)}</span>
+            <span class="emet"><small>Leaves left</small><b class="${s.remaining < 0 ? "neg" : ""}">${s.remaining}<i> / ${s.total}</i></b></span>
+            <span class="emet"><small>Overtime</small><b class="${tone(m.balance)}">${Math.round(m.balance) ? signed(m.balance) : "0m"}</b></span>
+            <span class="emet"><small>This month</small><b>${cur ? fmtMin(cur.t.work) : "—"}${cur ? `<i> / ${fmtMin(rq.required)}</i>` : ""}</b>${reqReason(rq) ? `<em class="why">${esc(reqReason(rq))}</em>` : ""}</span>
+            <span class="emet"><small>Loan left</small><b class="${L.remaining ? "neg" : "muted"}">${L.has ? (L.remaining ? money(L.remaining) : "Paid") : "—"}</b></span>
+            ${I.chev}
+          </button>`).join("")}
+        <p class="empty-note" id="noMatch" hidden>No employee found.</p>
+      </div>
+
       ${issuesBlock(adminIssues)}
-
-      <label class="search">${I.search}<input id="empSearch" type="search" placeholder="Search name or ID" autocomplete="off"></label>
-      <div id="empList">
-        ${all.map(({ id, emp, s }, i) => {
-          const pct = s.total ? Math.min(100, s.usedCount / s.total * 100) : 0;
-          return `
-          <div class="emp" data-q="${esc((emp.name || "") + " " + id).toLowerCase()}" style="animation-delay:${i * 35}ms">
-            <div class="emp-head" onclick="this.parentElement.classList.toggle('open')">
-              <div class="avatar">${esc(initials(emp.name || id))}</div>
-              <div class="emp-meta">
-                <div class="emp-name">${esc(emp.name || "Unnamed")}</div>
-                ${String(emp.name || "") !== id ? `<div class="emp-id">${esc(id)}</div>` : ""}
-                <div class="bar"><i class="${pct >= 80 ? "warn" : ""}" style="width:0" data-w="${pct}%"></i></div>
-              </div>
-              <div class="emp-count">
-                <b class="${s.remaining < 0 ? "neg" : ""}">${s.usedCount}/${s.total}</b>
-                ${s.extraAll ? `<small>+${s.extraAll} extra</small>` : ""}
-              </div>
-              ${I.chev}
-            </div>
-            <div class="emp-body"><div><div class="inner">
-              ${adminAttBlock(emp)}
-              <div class="sub-h">Leaves taken</div>
-              ${leaveList(s.used, "used")}
-              <div class="sub-h">Extra earned (off day + overtime)</div>
-              ${s.extra.items.length || s.otRewards || !s.extraAll
-                ? leaveList(s.extra.items.concat(attModel(emp).rewards).sort(sortByDate), "extra")
-                : `<div class="list"><p class="empty-note">+${s.extraAll} extra leave${s.extraAll > 1 ? "s" : ""}</p></div>`}
-            </div></div></div>
-          </div>`;
-        }).join("")}
-      </div>
+      ${otNotice()}
       <button class="logout" onclick="signOut()">Sign out</button>
     </div>`;
 
+  box.querySelectorAll(".erow").forEach(r => r.onclick = () => openEmp(r.dataset.id));
   $("empSearch").oninput = e => {
     const q = e.target.value.trim().toLowerCase();
-    box.querySelectorAll(".emp").forEach(el => el.hidden = q && !el.dataset.q.includes(q));
+    let shown = 0;
+    box.querySelectorAll(".erow").forEach(el => { el.hidden = q && !el.dataset.q.includes(q); if(!el.hidden) shown++; });
+    $("noMatch").hidden = shown > 0;
   };
   animateNumbers(box);
+}
+
+/* ---------- Ek employee: sirf usi ka data ---------- */
+function adminEmployee(id){
+  const box = $("adminResult");
+  const emp = data[id], m = attModel(emp), s = summary(emp), L = loanInfo(emp);
+  const today = todayInfo(m);
+  const cur = m.months.length ? m.months[m.months.length - 1] : null;
+  const rq = monthReq(m, cur);
+  const myIssues = adminIssues.filter(x => String(x.name || "").toLowerCase() === String(emp.name || id).toLowerCase() || x.id === id);
+
+  box.innerHTML = `
+    <div class="dash">
+      <button type="button" class="backbtn" id="backBtn">‹ All employees</button>
+      <div class="dash-head emp-top">
+        <div class="avatar lg">${esc(initials(emp.name || id))}</div>
+        <div class="grow"><h3>${esc(emp.name || id)}</h3>${chip(today)}</div>
+      </div>
+
+      <div class="stats-row four tiles">
+        <div class="stat"><span class="label">Leaves left</span><span class="num ${s.remaining < 0 ? "neg" : ""}">${s.remaining}<small> / ${s.total}</small></span></div>
+        <div class="stat"><span class="label">Overtime balance</span><span class="num ${tone(m.balance)}">${Math.round(m.balance) ? signed(m.balance) : "0m"}</span></div>
+        <div class="stat"><span class="label">${cur ? esc(monthLabel(cur.start)) : "This month"}</span><span class="num">${cur ? fmtMin(cur.t.work) : "—"}${cur ? `<small> / ${fmtMin(rq.required)}</small>` : ""}</span>${reqReason(rq) ? `<span class="why">${esc(reqReason(rq))}</span>` : ""}</div>
+        <div class="stat"><span class="label">Loan left</span><span class="num ${L.remaining ? "neg" : ""}">${L.has ? (L.remaining ? money(L.remaining) : "Paid") : "—"}</span></div>
+      </div>
+
+      ${segmented("adNav", "Overview", "Leaves", "Hours", "Loan")}
+      <div id="aOverview"></div>
+      <div id="aLeaves" hidden></div>
+      <div id="aHours" hidden></div>
+      <div id="aLoan" hidden></div>
+
+      <button type="button" class="backbtn bottom" id="backBtn2">‹ All employees</button>
+    </div>`;
+
+  /* Overview */
+  const lastLeaves = s.used.slice().reverse().slice(0, 3);
+  $("aOverview").innerHTML = `
+    <div class="ov-grid">
+      <div>
+        <div class="sub-h">Today</div>
+        <div class="alist">${dayRow(m.todayDay, { click: true })}</div>
+        ${cur ? `<div class="sub-h">${esc(monthLabel(cur.start))} — so far</div>
+        <div class="apanel">${sumPanel(cur.t, true)}${reqPanel(rq)}${ymd(cur.end) < ATT.OT_START ? "" : statement(cur, monthShort(new Date(cur.start.getFullYear(), cur.start.getMonth() + 1, 1)))}</div>` : ""}
+      </div>
+      <div>
+        <div class="sub-h">Overtime</div>
+        ${nextLeavePanel(m)}
+        <div class="sub-h">Leaves</div>
+        <div class="apanel"><div class="lv-rows">
+          <div><span>Total (10 + extra − cut)</span><b>${s.total}</b></div>
+          <div><span>Used</span><b>${s.usedCount}</b></div>
+          <div class="tot"><span>${s.remaining < 0 ? "Over limit" : "Left"}</span><b class="${s.remaining < 0 ? "neg" : ""}">${s.remaining}</b></div>
+        </div>${lastLeaves.length ? `<p class="pnote">Last leave: ${esc(fmtLong(lastLeaves[0].date))}${lastLeaves[0].reason ? " · " + esc(lastLeaves[0].reason) : ""}</p>` : ""}</div>
+        ${L.has ? `<div class="sub-h">Loan</div>
+        <div class="apanel"><div class="lv-rows">
+          <div><span>Total loan</span><b>${money(L.taken)}</b></div>
+          <div><span>Paid back</span><b class="pos">${money(L.paid)}</b></div>
+          <div class="tot"><span>Remaining</span><b class="${L.remaining ? "neg" : "pos"}">${money(L.remaining)}</b></div>
+        </div>${L.remaining && L.inst ? `<p class="pnote">Next installment ${money(L.next)} · about ${L.months} month${L.months > 1 ? "s" : ""} left</p>` : ""}</div>` : ""}
+      </div>
+    </div>
+    ${myIssues.length ? issuesBlock(myIssues) : ""}`;
+
+  /* Leaves */
+  $("aLeaves").innerHTML = adminLeaves(emp, s, m);
+  wireSegmented("alSeg", ["alUsed", "alExtra", "alCut"]);
+
+  /* Hours: Months & weeks · Daily · Overtime */
+  $("aHours").innerHTML = `
+    ${segmented("ahNav", "Monthly", "Daily", "Overtime")}
+    <div id="hMonthly"></div><div id="hDaily" hidden></div><div id="hOvertime" hidden></div>
+    <p class="att-note">From Slack check-in / check-out. Break (up to 1h) is not counted as work; namaz time counts as work.</p>`;
+  const openDay = d => {
+    if(!d) return;
+    $("adNav").querySelector('button[data-i="2"]').click();
+    $("ahNav").querySelector('button[data-i="1"]').click();
+    $("hDaily").goTo(d);
+    $("aHours").scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+  mountMonthWeeks(m, $("hMonthly"), openDay);
+  mountDaily(m, $("hDaily"));
+  mountOvertime(m, $("hOvertime"), openDay);
+  const hp = ["hMonthly", "hDaily", "hOvertime"];
+  wireSegmented("ahNav", hp);
+  $("ahNav").querySelectorAll("button").forEach(b => b.addEventListener("click", () => animateNumbers($(hp[b.dataset.i]))));
+
+  /* Loan */
+  $("aLoan").innerHTML = viewLoan(emp);
+
+  const panes = ["aOverview", "aLeaves", "aHours", "aLoan"];
+  wireSegmented("adNav", panes);
+  $("adNav").querySelectorAll("button").forEach(b => b.addEventListener("click", () => animateNumbers($(panes[b.dataset.i]))));
+  $("aOverview").querySelectorAll(".arow.click").forEach(r => r.onclick = () => openDay(parseDate(r.dataset.day)));
+  $("backBtn").onclick = $("backBtn2").onclick = backToList;
+  animateNumbers(box);
+}
+
+/* Leaves: poori history, mahine ke hisaab se */
+function groupByMonth(items){
+  const g = new Map();
+  items.forEach(it => {
+    const d = parseDate(it.date);
+    const k = d ? `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}` : "zz";
+    if(!g.has(k)) g.set(k, { label: d ? monthLabel(d) : "No date", items: [] });
+    g.get(k).items.push(it);
+  });
+  return [...g.entries()].sort((a, b) => (a[0] < b[0] ? 1 : -1)).map(e => e[1]);
+}
+function adminLeaves(emp, s, m){
+  const used = s.used.slice();
+  const extra = s.extra.items.concat(m.rewards).sort(sortByDate);
+  const cuts = m.cuts.map(c => ({ date: c.date, reason: "Cut — 8h short time", days: 1 }));
+  const groups = (list, kind) => list.length
+    ? groupByMonth(list).map(g => `<div class="sub-h">${esc(g.label)} <span class="pill">${g.items.reduce((t, x) => t + (num(x.days) || 1), 0)}</span></div>${leaveList(g.items.slice().reverse(), kind)}`).join("")
+    : leaveList([], kind);
+  return `
+    <div class="lv-top"><div class="widget">
+      ${ring(s)}
+      <div class="legend">
+        <div class="legend-row"><span class="sw" style="background:linear-gradient(135deg,var(--blue),var(--purple))"></span><span class="lbl">Used</span><span class="val">${s.usedCount}</span></div>
+        <div class="legend-row"><span class="sw" style="background:var(--green)"></span><span class="lbl">Extra earned</span><span class="val">${s.extraAll ? "+" + s.extraAll : 0}</span></div>
+        ${s.otCut ? `<div class="legend-row"><span class="sw" style="background:var(--red)"></span><span class="lbl">Cut (short time)</span><span class="val">−${s.otCut}</span></div>` : ""}
+        <div class="legend-row"><span class="sw" style="background:color-mix(in srgb,var(--text) 25%,transparent)"></span><span class="lbl">Total available</span><span class="val">${s.total}</span></div>
+      </div>
+    </div>
+    <div class="apanel">
+      <div class="lv-rows">
+        <div><span>Annual leaves</span><b>${ANNUAL_LEAVES}</b></div>
+        <div><span>Extra — worked on off day</span><b class="pos">+${s.extra.count}</b></div>
+        <div><span>Extra — from overtime</span><b class="pos">+${s.otRewards}</b></div>
+        ${s.otCut ? `<div><span>Cut — short time (8h each)</span><b class="neg">−${s.otCut}</b></div>` : ""}
+        <div><span>Leaves used</span><b>${s.usedCount ? "−" + s.usedCount : 0}</b></div>
+        <div class="tot"><span>${s.remaining < 0 ? "Over limit" : "Leaves available"}</span><b class="${s.remaining < 0 ? "neg" : ""}">${s.remaining}</b></div>
+      </div>
+    </div></div>
+    ${segmented("alSeg", `Taken <span class="pill">${s.usedCount}</span>`, `Extra <span class="pill">${s.extraAll}</span>`, `Cut <span class="pill">${s.otCut}</span>`)}
+    <div id="alUsed">${groups(used, "used")}</div>
+    <div id="alExtra" hidden>${extra.length || !s.extraAll ? groups(extra, "extra") : `<div class="list"><p class="empty-note">+${s.extraAll} extra leave(s).</p></div>`}</div>
+    <div id="alCut" hidden>${cuts.length ? groups(cuts, "used") : `<div class="list"><p class="empty-note">No paid leave cut.</p></div>`}</div>`;
+}
+
+/* Mahina -> us ke saare haftay -> din */
+function mountMonthWeeks(m, el, openDay){
+  if(!m.months.length){
+    el.innerHTML = `<div class="alist"><p class="empty-note">Working hours will appear here once Slack check-ins are synced.</p></div>`;
+    return;
+  }
+  let idx = m.months.length - 1, openWk = null;
+  const render = () => {
+    const mo = m.months[idx];
+    const nextName = monthShort(new Date(mo.start.getFullYear(), mo.start.getMonth() + 1, 1));
+    const weeks = [];
+    for(let ws = weekStart(mo.start), n = 1; ws <= mo.end && ws <= m.today; ws = addDays(ws, 7), n++){
+      const from = ws < mo.start ? mo.start : ws, we = addDays(ws, 6), to = we > mo.end ? mo.end : we;
+      const days = [];
+      for(let d = new Date(from); d <= to && d <= m.today; d = addDays(d, 1)) days.push(dayAt(m, d));
+      const t = totals(days);
+      const hasToday = m.today >= from && m.today <= to;
+      weeks.push({ n, from, to, days, t, hasToday, key: ymd(from) });
+    }
+    if(openWk == null){ const w = weeks.find(x => x.hasToday) || weeks[weeks.length - 1]; openWk = w ? w.key : ""; }
+    const net = t => ATT.SHORT_REDUCES_OVERTIME ? t.ot - t.short : t.ot;
+    el.innerHTML = `
+      <div class="navrow">
+        <button type="button" class="nb" data-d="-1" aria-label="Previous month" ${idx <= 0 ? "disabled" : ""}>‹</button>
+        <label class="msel">
+          <select id="mPick" aria-label="Choose month">${m.months.map((x, i) => `<option value="${i}" ${i === idx ? "selected" : ""}>${monthLabel(x.start)}</option>`).slice().reverse().join("")}</select>
+          <small>${mo.status === "Final" ? "Final · saved" : mo.current ? "This month — so far" : "Closing — final in a few days"}</small>
+        </label>
+        <button type="button" class="nb" data-d="1" aria-label="Next month" ${idx >= m.months.length - 1 ? "disabled" : ""}>›</button>
+      </div>
+      <div class="mw-grid">
+        <div class="apanel">
+          ${sumPanel(mo.t, true)}
+          ${reqPanel(monthReq(m, mo))}
+          ${ymd(mo.end) < ATT.OT_START
+            ? `<p class="pnote">Overtime and short time are counted from <b>${otStartLabel()}</b>. This month is shown for record only.</p>`
+            : statement(mo, nextName)}
+        </div>
+        <div>
+          <div class="sub-h">Weeks in ${esc(monthLabel(mo.start))}</div>
+          <div class="wklist">${weeks.map(w => `
+            <div class="wk${w.key === openWk ? " open" : ""}" data-k="${w.key}">
+              <button type="button" class="wk-head">
+                <span class="wk-n"><b>Week ${w.n}</b><small>${shortDate(w.from)}${+w.from === +w.to ? "" : " – " + shortDate(w.to)}${w.hasToday ? " · now" : ""}</small></span>
+                <span class="wk-mid"><b>${fmtMin(w.t.work)}</b><small> / ${fmtMin(w.t.required)}</small>
+                  <em>${w.t.worked} day${w.t.worked === 1 ? "" : "s"}${w.t.ot ? ` · OT +${fmtMin(w.t.ot)}` : ""}${w.t.short ? ` · Short −${fmtMin(w.t.short)}` : ""}${w.t.leave ? ` · ${w.t.leave} leave` : ""}</em></span>
+                ${w.t.worked && w.t.pre === w.t.worked ? `<span class="anet muted">Not counted</span>` : `<span class="anet ${tone(net(w.t))}">${Math.round(net(w.t)) ? signed(net(w.t)) : "0m"}</span>`}
+                ${I.chev}
+              </button>
+              <div class="wk-body"><div><div class="alist">${w.days.map(x => dayRow(x, { click: x.kind !== "upcoming" && x.kind !== "nodata" })).join("")}</div></div></div>
+            </div>`).join("") || `<div class="alist"><p class="empty-note">No weeks yet.</p></div>`}</div>
+          <p class="att-note">Tap a week to see its days, and a day to see how it was calculated.</p>
+        </div>
+      </div>
+      <div class="sub-h">All months</div>
+      <div class="alist">${m.months.map((x, i) => ({ x, i })).reverse().map(({ x, i }) => `
+        <div class="arow click mrow${i === idx ? " is-today" : ""}" data-i="${i}">
+          <div class="adate"><small class="mo">${x.start.getFullYear()}</small><b>${monthShort(x.start)}</b><small>${x.current ? "so far" : ""}</small></div>
+          <div class="abody"><div class="amain">${fmtMin(x.t.work)}<span class="of"> / ${fmtMin(x.t.required)}</span></div>
+            <div class="asub">${ymd(x.end) < ATT.OT_START ? "Before overtime tracking" : `Overtime +${fmtMin(x.ot)}${x.short && ATT.SHORT_REDUCES_OVERTIME ? ` · Short −${fmtMin(x.short)}` : ""} · Carried ${signed(x.carryOut)}`}</div></div>
+          <div class="aright">${ymd(x.end) < ATT.OT_START ? `<span class="ast">Not counted</span>` : x.leaves ? `<span class="badge">+${x.leaves} leave${x.leaves > 1 ? "s" : ""}</span>` : `<span class="ast">No leave</span>`}</div>
+        </div>`).join("")}</div>`;
+    el.querySelectorAll(".nb").forEach(bt => bt.onclick = () => { idx += +bt.dataset.d; openWk = null; render(); animateNumbers(el); });
+    $("mPick").onchange = e => { idx = +e.target.value; openWk = null; render(); animateNumbers(el); };
+    el.querySelectorAll(".wk-head").forEach(h => h.onclick = () => {
+      const wk = h.parentElement, on = !wk.classList.contains("open");
+      el.querySelectorAll(".wk.open").forEach(x => x.classList.remove("open"));
+      wk.classList.toggle("open", on); openWk = on ? wk.dataset.k : "";
+    });
+    el.querySelectorAll(".arow.mrow").forEach(r => r.onclick = () => { idx = +r.dataset.i; openWk = null; render(); animateNumbers(el); el.scrollIntoView({ behavior: "smooth", block: "start" }); });
+    el.querySelectorAll(".wk .arow.click").forEach(r => r.onclick = () => openDay(parseDate(r.dataset.day)));
+  };
+  render();
+}
+
+/* ---------- Admin auto refresh (har 60 second) — wahi screen, wahi tab ---------- */
+const ADMIN_TABS = ["adNav", "ahNav", "alSeg", "otSeg"];
+let adminSess = null;
+function startAdminRefresh(user, pass, d){
+  const first = !adminSess;
+  adminSess = { user, pass, sig: JSON.stringify(d) };
+  if(!first) return;
+  setInterval(refreshAdmin, 60 * 1000);
+  document.addEventListener("visibilitychange", () => { if(!document.hidden) refreshAdmin(); });
+}
+async function refreshAdmin(){
+  if(!adminSess || document.hidden || adminSess.busy) return;
+  adminSess.busy = true;
+  try{
+    const res = await api({ action:"admin", user: adminSess.user, pass: adminSess.pass, refresh: true });
+    if(!res.ok) return;
+    const d = { employees: res.employees || {}, issues: res.issues || [] };
+    const sig = JSON.stringify(d);
+    if(sig === adminSess.sig) return;
+    adminSess.sig = sig;
+    rememberLogin("ot-admin-data", d);
+    const tabs = ADMIN_TABS.map(id => [id, $(id) ? $(id).dataset.active : "0"]);
+    const q = $("empSearch") ? $("empSearch").value : "";
+    const y = window.scrollY;
+    data = d.employees; adminIssues = d.issues;
+    renderAdmin();
+    tabs.forEach(([id, i]) => { if(i && i !== "0" && $(id)) $(id).querySelector(`button[data-i="${i}"]`)?.click(); });
+    if(q && $("empSearch")){ $("empSearch").value = q; $("empSearch").dispatchEvent(new Event("input")); }
+    window.scrollTo(0, y);
+  } finally { adminSess.busy = false; }
 }
 
 
@@ -731,7 +1167,7 @@ function dayAt(m, d){
 }
 
 /* ---------- shared UI ---------- */
-function sumPanel(t){
+function sumPanel(t, admin){
   const extra = [
     t.pre ? `${t.pre} before ${otStartLabel()} (overtime not counted)` : "",
     t.half ? `<span class="pos">Half day relief: ${t.half} day${t.half > 1 ? "s" : ""}</span>` : "",
@@ -740,7 +1176,7 @@ function sumPanel(t){
   ].filter(Boolean).join(" · ");
   return `
     <div class="sum4">
-      <div><small>Required</small><b>${fmtMin(t.required)}</b></div>
+      <div><small>${admin ? "Required (counted days)" : "Required"}</small><b>${fmtMin(t.required)}</b></div>
       <div><small>Worked</small><b>${fmtMin(t.work)}</b></div>
       <div><small>Overtime</small><b class="pos">${t.ot ? "+" + fmtMin(t.ot) : "0m"}</b></div>
       <div><small>Short</small><b class="${t.short ? "neg" : ""}">${t.short ? "−" + fmtMin(t.short) : "0m"}</b></div>
@@ -1142,17 +1578,4 @@ function issuesBlock(issues){
         ${x.link ? `<a class="badge ${x.severity === "ERROR" ? "red" : "neutral"}" href="${esc(x.link)}" target="_blank" rel="noopener">Open</a>` : `<span class="badge ${x.severity === "ERROR" ? "red" : "neutral"}">${esc(x.severity)}</span>`}
       </div>`).join("")}</div>
     <p class="att-note">Fix in Google Sheet → "Raw Log" tab (Manual Type / Manual Time), or tick “Resolved” in the "Issues" tab.</p>`;
-}
-
-/* Admin: ek employee ka is mahine ka khulasa */
-function adminAttBlock(emp){
-  const m = attModel(emp);
-  if(!m.recs.size) return `<div class="sub-h">Working hours</div><div class="list"><p class="empty-note">No attendance synced yet.</p></div>`;
-  const mo = m.months[m.months.length - 1];
-  const last = m.days.slice(-7).reverse();
-  return `
-    <div class="sub-h">Working hours — ${monthLabel(mo.start)} (so far)</div>
-    <div class="apanel">${sumPanel(mo.t)}${statement(mo, monthShort(new Date(mo.start.getFullYear(), mo.start.getMonth() + 1, 1)))}</div>
-    <div class="sub-h">Last 7 days</div>
-    <div class="alist">${last.map(x => dayRow(x)).join("")}</div>`;
 }
