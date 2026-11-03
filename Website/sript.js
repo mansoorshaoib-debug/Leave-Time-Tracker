@@ -978,7 +978,7 @@ const ATT = {
   OT_START: "2026-10-24",         // overtime / short ISI DIN se (Attendance.gs OVERTIME_START_DATE jaisa)
   NAMAZ_COUNTS_AS_WORK: true,     // Attendance.gs CONFIG ke sath same rakhein (9h office = 8h kaam + 1h break)
   SHORT_REDUCES_OVERTIME: true,   // Attendance.gs CONFIG ke sath same rakhein
-  LATE_RELIEF: 60,                // "Late" likha -> 1h tak short maaf (Attendance.gs LATE_RELIEF_MINUTES)
+  LATE_RELIEF: 60,                // "Late" likha -> jitna late aaya utna maaf, max 1h (Attendance.gs LATE_RELIEF_MINUTES)
   LATE_RELIEF_PER_MONTH: 3,       // mahine mein 3 dafa (Attendance.gs LATE_RELIEF_PER_MONTH)
   DAY_START_HOUR: 5,
   LIVE_MAX_MIN: 14 * 60
@@ -1044,7 +1044,7 @@ function makeDay(d, r, leave, flags){
     work: 0, brk: 0, namaz: 0, ot: 0, short: 0, required: 0, net: 0, final: false };
   if(r){
     Object.assign(day, { work: r.work, brk: r.brk, namaz: r.namaz, firstIn: r.firstIn, lastOut: r.lastOut, late: r.late || "",
-      startGrace: num(r.startGrace), breakGrace: num(r.breakGrace), lateRelief: num(r.lateRelief), lateNo: num(r.lateNo) });
+      startGrace: num(r.startGrace), breakGrace: num(r.breakGrace), lateRelief: num(r.lateRelief), lateNo: num(r.lateNo), lateBy: num(r.lateBy) });
     day.required = r.required != null ? r.required : (off ? 0 : ATT.TARGET);
     if(r.final){
       day.final = true;
@@ -1071,7 +1071,7 @@ function makeDay(d, r, leave, flags){
     const diff = day.work - day.required;
     // "Late" likha (mahine ke pehle 3): aaj 1h tak kam kaam bhi chalega — din khatam hone par short se katega
     const canRelief = !day.halfDay && day.late === "Informed" && day.lateNo && day.lateNo <= ATT.LATE_RELIEF_PER_MONTH;
-    day.liveRelief = canRelief ? Math.min(ATT.LATE_RELIEF, Math.max(-diff, 0)) : 0;
+    day.liveRelief = canRelief ? Math.min(ATT.LATE_RELIEF, day.lateBy || 0, Math.max(-diff, 0)) : 0;   // jitna late, utna (max 1h)
     day.remaining = Math.max(-diff - day.liveRelief, 0); day.extraNow = Math.max(diff, 0);
   }
   return day;
@@ -1318,7 +1318,7 @@ function dayCalc(t){
   if(t.breakGrace >= 1) rows.push(`<div><span>Break grace: ${fmtMin(t.brk)} break counted as ${fmtMin(ATT.ALLOWED_BREAK)}</span><b class="pos">+${fmtMin(t.breakGrace)}</b></div>`);
   rows.push(`<div class="hl"><span>Worked${t.kind === "live" ? " so far" : ""}${t.namaz && ATT.NAMAZ_COUNTS_AS_WORK ? `<br><small>includes namaz ${fmtMin(t.namaz)}</small>` : ""}</span><b>${fmtMin(t.work)}</b></div>`);
   rows.push(`<div><span>Required${t.off ? " (Sunday — weekly off)" : ""}</span><b>−${fmtMin(t.required)}</b></div>`);
-  if(t.lateRelief >= 1) rows.push(`<div><span>Late relief — posted "Late" (${t.lateNo} of ${ATT.LATE_RELIEF_PER_MONTH} this month)<br><small>Up to ${fmtMin(ATT.LATE_RELIEF)} short time is not counted</small></span><b class="pos">+${fmtMin(t.lateRelief)}</b></div>`);
+  if(t.lateRelief >= 1) rows.push(`<div><span>Late relief — posted "Late" (${t.lateNo} of ${ATT.LATE_RELIEF_PER_MONTH} this month)<br><small>Arrived ${fmtMin(t.lateBy)} late · late time is forgiven up to ${fmtMin(ATT.LATE_RELIEF)}</small></span><b class="pos">+${fmtMin(t.lateRelief)}</b></div>`);
   else if(t.lateNo > ATT.LATE_RELIEF_PER_MONTH && t.final) rows.push(`<div><span>Posted "Late" — ${ordinal(t.lateNo)} time this month<br><small>Only ${ATT.LATE_RELIEF_PER_MONTH} late reliefs per month</small></span><b class="muted">No relief</b></div>`);
   let end, note = "";
   if(t.final && t.preStart){
@@ -1335,7 +1335,7 @@ function dayCalc(t){
     end = `<div class="hl"><span>Half day</span><b>Checked out</b></div>`;
     note = "Checked out as half day. Short time will not be counted for today.";
   } else if(t.kind === "live"){
-    if(t.liveRelief >= 1) rows.push(`<div><span>Late relief — posted "Late" (${t.lateNo} of ${ATT.LATE_RELIEF_PER_MONTH} this month)<br><small>Up to ${fmtMin(ATT.LATE_RELIEF)} less work is allowed today</small></span><b class="pos">+${fmtMin(t.liveRelief)}</b></div>`);
+    if(t.liveRelief >= 1) rows.push(`<div><span>Late relief — posted "Late" (${t.lateNo} of ${ATT.LATE_RELIEF_PER_MONTH} this month)<br><small>Arrived ${fmtMin(t.lateBy)} late · late time is forgiven up to ${fmtMin(ATT.LATE_RELIEF)}</small></span><b class="pos">+${fmtMin(t.liveRelief)}</b></div>`);
     end = `<div class="hl"><span>${t.remaining ? "Still needed today" : t.liveRelief >= 1 ? "Done for today (with late relief)" : "Extra so far"}</span><b class="${t.remaining ? "" : "pos"}">${t.remaining ? fmtMin(t.remaining) : t.extraNow >= 1 || !(t.liveRelief >= 1) ? "+" + fmtMin(t.extraNow) : "✓"}</b></div>`;
     note = "Today is still running. Overtime is added after the day ends.";
   } else {
@@ -1353,11 +1353,11 @@ function mountDaily(m, el){
     const t = dayAt(m, cur);
     const isToday = ymd(cur) === ymd(m.today);
     const statusText = t.kind === "live" ? t.liveStatus : t.kind === "notyet" ? "Not checked in yet" : (KIND[t.kind] || "No record");
-    const req = t.required || 0;
-    const pct = req ? t.work / req : (t.work ? 1 : 0);
+    const req = t.required || 0, rel = t.liveRelief || 0;
+    const pct = req ? t.work / Math.max(1, req - rel) : (t.work ? 1 : 0);
     const ring = t.off && !t.r
       ? progressRing(0, "var(--green)", "Off", "Sunday")
-      : progressRing(pct, pct >= 1 ? "var(--green)" : "var(--blue)", fmtMin(t.work), req ? `of ${fmtMin(req)}` : "Sunday");
+      : progressRing(pct, pct >= 1 ? "var(--green)" : "var(--blue)", fmtMin(t.work), req ? `of ${fmtMin(req - rel)}` : "Sunday");
     el.innerHTML = `
       <div class="navrow">
         <button type="button" class="nb" data-d="-1" aria-label="Previous day">‹</button>
@@ -1371,7 +1371,7 @@ function mountDaily(m, el){
           <div class="facts">
             <div><small>Check in</small><b>${esc(t.firstIn || "—")}</b></div>
             <div><small>Last check-out</small><b>${esc(t.lastOut || "—")}</b></div>
-            <div><small>Required</small><b>${t.r || t.kind === "notyet" ? (req ? fmtMin(req) : "0h (Sunday)") : "—"}</b></div>
+            <div><small>Required</small><b>${t.r || t.kind === "notyet" ? (req ? fmtMin(req) : "0h (Sunday)") : "—"}${rel >= 1 ? ` <span class="pos rel">−${fmtMin(rel)} late relief</span>` : ""}</b></div>
             <div><small>${t.final ? (t.net < 0 ? "Short" : "Overtime") : "Overtime"}</small><b class="${t.preStart ? "muted" : tone(t.net)}">${t.final ? (t.preStart ? "Not counted" : t.net ? signed(t.net) : "0m") : "—"}</b></div>
           </div>
         </div>
