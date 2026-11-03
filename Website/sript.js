@@ -1069,7 +1069,10 @@ function makeDay(d, r, leave, flags){
   else day.kind = "absent";
   if(day.kind === "live" || day.kind === "notyet"){
     const diff = day.work - day.required;
-    day.remaining = Math.max(-diff, 0); day.extraNow = Math.max(diff, 0);
+    // "Late" likha (mahine ke pehle 3): aaj 1h tak kam kaam bhi chalega — din khatam hone par short se katega
+    const canRelief = !day.halfDay && day.late === "Informed" && day.lateNo && day.lateNo <= ATT.LATE_RELIEF_PER_MONTH;
+    day.liveRelief = canRelief ? Math.min(ATT.LATE_RELIEF, Math.max(-diff, 0)) : 0;
+    day.remaining = Math.max(-diff - day.liveRelief, 0); day.extraNow = Math.max(diff, 0);
   }
   return day;
 }
@@ -1332,7 +1335,8 @@ function dayCalc(t){
     end = `<div class="hl"><span>Half day</span><b>Checked out</b></div>`;
     note = "Checked out as half day. Short time will not be counted for today.";
   } else if(t.kind === "live"){
-    end = `<div class="hl"><span>${t.remaining ? "Still needed today" : "Extra so far"}</span><b class="${t.remaining ? "" : "pos"}">${t.remaining ? fmtMin(t.remaining) : "+" + fmtMin(t.extraNow)}</b></div>`;
+    if(t.liveRelief >= 1) rows.push(`<div><span>Late relief — posted "Late" (${t.lateNo} of ${ATT.LATE_RELIEF_PER_MONTH} this month)<br><small>Up to ${fmtMin(ATT.LATE_RELIEF)} less work is allowed today</small></span><b class="pos">+${fmtMin(t.liveRelief)}</b></div>`);
+    end = `<div class="hl"><span>${t.remaining ? "Still needed today" : t.liveRelief >= 1 ? "Done for today (with late relief)" : "Extra so far"}</span><b class="${t.remaining ? "" : "pos"}">${t.remaining ? fmtMin(t.remaining) : t.extraNow >= 1 || !(t.liveRelief >= 1) ? "+" + fmtMin(t.extraNow) : "✓"}</b></div>`;
     note = "Today is still running. Overtime is added after the day ends.";
   } else {
     end = `<div class="hl"><span>Counted</span><b class="neg">Not counted</b></div>`;
