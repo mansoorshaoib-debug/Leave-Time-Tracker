@@ -1071,7 +1071,7 @@ function makeDay(d, r, leave, flags){
     const diff = day.work - day.required;
     // "Late" likha (mahine ke pehle 3): aaj 1h tak kam kaam bhi chalega — din khatam hone par short se katega
     const canRelief = !day.halfDay && day.late === "Informed" && day.lateNo && day.lateNo <= ATT.LATE_RELIEF_PER_MONTH;
-    day.liveRelief = canRelief ? Math.min(ATT.LATE_RELIEF, day.lateBy || 0, Math.max(-diff, 0)) : 0;   // jitna late, utna (max 1h)
+    day.liveRelief = canRelief ? Math.min(ATT.LATE_RELIEF, day.lateBy || 0) : 0;   // jitna late, utna (max 1h) — poora din fixed
     day.remaining = Math.max(-diff - day.liveRelief, 0); day.extraNow = Math.max(diff, 0);
   }
   return day;
@@ -1335,7 +1335,7 @@ function dayCalc(t){
     end = `<div class="hl"><span>Half day</span><b>Checked out</b></div>`;
     note = "Checked out as half day. Short time will not be counted for today.";
   } else if(t.kind === "live"){
-    if(t.liveRelief >= 1) rows.push(`<div><span>Late relief — posted "Late" (${t.lateNo} of ${ATT.LATE_RELIEF_PER_MONTH} this month)<br><small>Arrived ${fmtMin(t.lateBy)} late · late time is forgiven up to ${fmtMin(ATT.LATE_RELIEF)}</small></span><b class="pos">+${fmtMin(t.liveRelief)}</b></div>`);
+    if(t.liveRelief >= 1) rows.push(`<div><span>Late relief — posted "Late" (${t.lateNo} of ${ATT.LATE_RELIEF_PER_MONTH} this month)<br><small>Arrived ${fmtMin(t.lateBy)} late · forgiven up to ${fmtMin(ATT.LATE_RELIEF)} · overtime starts after 8h of actual work</small></span><b class="pos">+${fmtMin(t.liveRelief)}</b></div>`);
     end = `<div class="hl"><span>${t.remaining ? "Still needed today" : t.liveRelief >= 1 ? "Done for today (with late relief)" : "Extra so far"}</span><b class="${t.remaining ? "" : "pos"}">${t.remaining ? fmtMin(t.remaining) : t.extraNow >= 1 || !(t.liveRelief >= 1) ? "+" + fmtMin(t.extraNow) : "✓"}</b></div>`;
     note = "Today is still running. Overtime is added after the day ends.";
   } else {
@@ -1353,8 +1353,8 @@ function mountDaily(m, el){
     const t = dayAt(m, cur);
     const isToday = ymd(cur) === ymd(m.today);
     const statusText = t.kind === "live" ? t.liveStatus : t.kind === "notyet" ? "Not checked in yet" : (KIND[t.kind] || "No record");
-    const req = t.required || 0, rel = t.liveRelief || 0;
-        const shown = t.work + rel;                                   // relief ghanton mein jud jata hai
+    const req = t.required || 0, rel = t.kind === "live" ? (t.liveRelief || 0) : t.final ? (t.lateRelief || 0) : 0;
+    const shown = t.work + rel;                                   // relief ghanton mein jud jata hai
     const pct = req ? shown / req : (t.work ? 1 : 0);
     const ring = t.off && !t.r
       ? progressRing(0, "var(--green)", "Off", "Sunday")
