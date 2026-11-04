@@ -1309,6 +1309,16 @@ function progressRing(pct, color, centerTop, centerSub){
     </div>`;
 }
 
+/* Break ki line: 1h allowed + (agar grace se zyada) extra break alag saaf line mein */
+function breakRows(t, rows, label){
+  if(!t.brk) return;
+  const extra = !(t.breakGrace >= 1) && t.brk > ATT.ALLOWED_BREAK + ATT.GRACE ? t.brk - ATT.ALLOWED_BREAK : 0;
+  if(extra >= 1){
+    rows.push(`<div><span>${label} allowed (${fmtMin(ATT.ALLOWED_BREAK)}) — not counted</span><b>−${fmtMin(ATT.ALLOWED_BREAK)}</b></div>`);
+    rows.push(`<div><span>Extra break (over ${fmtMin(ATT.ALLOWED_BREAK + ATT.GRACE)} limit) — also not counted</span><b class="neg">−${fmtMin(extra)}</b></div>`);
+  } else rows.push(`<div><span>${label} (not counted)</span><b>−${fmtMin(t.brk)}</b></div>`);
+}
+
 /* Ek din ka hisaab, line by line */
 function dayCalc(t){
   if(!t.r){
@@ -1324,14 +1334,14 @@ function dayCalc(t){
   if(t.kind !== "live" && a != null && b != null){
     const span = b >= a ? b - a : b + 1440 - a;
     rows.push(`<div><span>From first check-in to last check-out<br><small>${esc(t.firstIn)} → ${esc(t.lastOut)}</small></span><b>${fmtMin(span)}</b></div>`);
-    if(t.brk) rows.push(`<div><span>Break (not counted)</span><b>−${fmtMin(t.brk)}</b></div>`);
+    breakRows(t, rows, "Break");
     if(t.namaz && !ATT.NAMAZ_COUNTS_AS_WORK) rows.push(`<div><span>Namaz (not counted)</span><b>−${fmtMin(t.namaz)}</b></div>`);
     const grace = Math.round(t.startGrace || 0) + Math.round(t.breakGrace || 0);
     const away = span + grace - Math.round(t.work) - Math.round(t.brk) - (ATT.NAMAZ_COUNTS_AS_WORK ? 0 : Math.round(t.namaz));
     if(away >= 3) rows.push(`<div><span>Other time checked out</span><b>−${fmtMin(away)}</b></div>`);
   } else if(t.kind === "live"){
     rows.push(`<div><span>Checked in at</span><b>${esc(t.firstIn || "—")}</b></div>`);
-    if(t.brk) rows.push(`<div><span>Break so far (not counted)</span><b>−${fmtMin(t.brk)}</b></div>`);
+    breakRows(t, rows, "Break so far");
     if(t.namaz && !ATT.NAMAZ_COUNTS_AS_WORK) rows.push(`<div><span>Namaz so far (not counted)</span><b>−${fmtMin(t.namaz)}</b></div>`);
   }
   if(t.startGrace >= 1){
@@ -1381,6 +1391,8 @@ function mountDaily(m, el){
     const statusText = t.kind === "live" ? t.liveStatus : t.kind === "notyet" ? "Not checked in yet" : (KIND[t.kind] || "No record");
     const req = t.required || 0, rel = t.kind === "live" ? (t.liveRelief || 0) : t.final ? (t.lateRelief || 0) : 0;
     const shown = t.work + rel;                                   // relief ghanton mein jud jata hai
+    const live = t.kind === "live" && !t.halfDay && req > 0;      // aaj: abhi tak ka overtime / short (din khatam hone par pakka)
+    const liveNet = live ? Math.round(shown - req) : 0;
     const pct = req ? shown / req : (t.work ? 1 : 0);
     const ring = t.off && !t.r
       ? progressRing(0, "var(--green)", "Off", "Sunday")
@@ -1399,7 +1411,7 @@ function mountDaily(m, el){
             <div><small>Check in</small><b>${esc(t.firstIn || "—")}</b></div>
             <div><small>Last check-out</small><b>${esc(t.lastOut || "—")}</b></div>
             <div><small>Required</small><b>${t.r || t.kind === "notyet" ? (req ? fmtMin(req) : "0h (Sunday)") : "—"}${rel >= 1 ? ` <span class="pos rel">+${fmtMin(rel)} late relief</span>` : ""}</b></div>
-            <div><small>${t.final ? (t.net < 0 ? "Short" : "Overtime") : "Overtime"}</small><b class="${t.preStart ? "muted" : tone(t.net)}">${t.final ? (t.preStart ? "Not counted" : t.net ? signed(t.net) : "0m") : "—"}</b></div>
+            <div><small>${t.final ? (t.net < 0 ? "Short" : "Overtime") : live ? (liveNet < 0 ? "Short so far" : "Overtime so far") : "Overtime"}</small><b class="${t.preStart ? "muted" : tone(t.final ? t.net : live ? liveNet : 0)}">${t.final ? (t.preStart ? "Not counted" : t.net ? signed(t.net) : "0m") : live ? (liveNet ? signed(liveNet) : "0m") : "—"}</b></div>
           </div>
         </div>
         ${t.r ? breakNamaz(t.brk, t.namaz, 1, true) : ""}
