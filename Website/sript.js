@@ -1072,20 +1072,21 @@ function makeDay(d, r, leave, flags){
     // "Late" likha (mahine ke pehle 3): aaj 1h tak kam kaam bhi chalega — din khatam hone par short se katega
     const canRelief = !day.halfDay && day.late === "Informed" && day.lateNo && day.lateNo <= ATT.LATE_RELIEF_PER_MONTH;
     day.liveRelief = canRelief ? Math.min(ATT.LATE_RELIEF, day.lateBy || 0) : 0;   // jitna late, utna (max 1h) — poora din fixed
-    day.remaining = Math.max(-diff - day.liveRelief, 0); day.extraNow = Math.max(diff, 0);
+    day.remaining = Math.max(-diff - day.liveRelief, 0); day.extraNow = Math.max(diff + day.liveRelief, 0);   // relief ghanton mein judta hai
   }
   return day;
 }
 
 /* Sirf poore (final) din gine jate hain — is liye Worked − Required = Overtime − Short hamesha */
 function totals(days){
-  const t = { required: 0, work: 0, brk: 0, namaz: 0, ot: 0, short: 0, worked: 0, absent: 0, leave: 0, offWorked: 0, incomplete: 0, pre: 0, half: 0, relief: 0 };
+  const t = { required: 0, work: 0, brk: 0, namaz: 0, ot: 0, short: 0, worked: 0, absent: 0, leave: 0, offWorked: 0, incomplete: 0, pre: 0, half: 0, relief: 0, lateRel: 0, lateDays: 0 };
   days.forEach(x => {
     if(x.final){
       t.required += x.required; t.work += x.work; t.brk += x.brk; t.namaz += x.namaz;
       t.ot += x.ot; t.short += x.short; t.worked++;
       if(x.preStart) t.pre++;
       if(x.halfDay){ t.half++; t.relief += x.relief || 0; }
+      if(x.lateRelief >= 1){ t.lateRel += x.lateRelief; t.lateDays++; }
     }
     if(x.kind === "absent") t.absent++;
     if(x.kind === "leave") t.leave++;
@@ -1176,6 +1177,7 @@ function sumPanel(t, admin){
   const extra = [
     t.pre ? `${t.pre} before ${otStartLabel()} (overtime not counted)` : "",
     t.half ? `<span class="pos">Half day relief: ${t.half} day${t.half > 1 ? "s" : ""}</span>` : "",
+    t.lateRel ? `<span class="pos">Late relief: +${fmtMin(t.lateRel)} (${t.lateDays} day${t.lateDays > 1 ? "s" : ""})</span>` : "",
     t.leave ? `${t.leave} leave` : "",
     t.incomplete ? `<span class="neg">${t.incomplete} day${t.incomplete > 1 ? "s" : ""} not counted (no check-out)</span>` : ""
   ].filter(Boolean).join(" · ");
@@ -1255,7 +1257,8 @@ function dayRow(day, opts = {}){
     if(day.halfDay) sub += ` · <span class="pos">Half day — worked ${fmtMin(day.work)}</span>`;
     if(day.late === "Y") sub += ` · <span class="neg">Late</span>`;
     if(day.late === "Informed") sub += ` · <span class="muted">Late (informed${day.lateNo ? (day.lateNo <= ATT.LATE_RELIEF_PER_MONTH ? ` ${day.lateNo}/${ATT.LATE_RELIEF_PER_MONTH}` : ` · ${ordinal(day.lateNo)}, no relief`) : ""})</span>`;
-    if(day.lateRelief >= 1) sub += ` · <span class="pos">Late relief ${fmtMin(day.lateRelief)}</span>`;
+    const lr = day.final ? day.lateRelief : day.liveRelief;
+    if(lr >= 1) sub += ` · <span class="pos">Late relief +${fmtMin(lr)}</span>`;
   } else if(day.kind === "leave"){
     main = `<span class="muted-main">Leave</span>`;
     sub = esc(day.leave.reason || "");
@@ -1318,7 +1321,7 @@ function dayCalc(t){
   if(t.breakGrace >= 1) rows.push(`<div><span>Break grace: ${fmtMin(t.brk)} break counted as ${fmtMin(ATT.ALLOWED_BREAK)}</span><b class="pos">+${fmtMin(t.breakGrace)}</b></div>`);
   rows.push(`<div class="hl"><span>Worked${t.kind === "live" ? " so far" : ""}${t.namaz && ATT.NAMAZ_COUNTS_AS_WORK ? `<br><small>includes namaz ${fmtMin(t.namaz)}</small>` : ""}</span><b>${fmtMin(t.work)}</b></div>`);
   rows.push(`<div><span>Required${t.off ? " (Sunday — weekly off)" : ""}</span><b>−${fmtMin(t.required)}</b></div>`);
-  if(t.lateRelief >= 1) rows.push(`<div><span>Late relief — posted "Late" (${t.lateNo} of ${ATT.LATE_RELIEF_PER_MONTH} this month)<br><small>Arrived ${fmtMin(t.lateBy)} late · late time is forgiven up to ${fmtMin(ATT.LATE_RELIEF)}</small></span><b class="pos">+${fmtMin(t.lateRelief)}</b></div>`);
+  if(t.lateRelief >= 1) rows.push(`<div><span>Late relief — posted "Late" (${t.lateNo} of ${ATT.LATE_RELIEF_PER_MONTH} this month)<br><small>Arrived ${fmtMin(t.lateBy)} late · added to hours (max ${fmtMin(ATT.LATE_RELIEF)})</small></span><b class="pos">+${fmtMin(t.lateRelief)}</b></div>`);
   else if(t.lateNo > ATT.LATE_RELIEF_PER_MONTH && t.final) rows.push(`<div><span>Posted "Late" — ${ordinal(t.lateNo)} time this month<br><small>Only ${ATT.LATE_RELIEF_PER_MONTH} late reliefs per month</small></span><b class="muted">No relief</b></div>`);
   let end, note = "";
   if(t.final && t.preStart){
@@ -1335,8 +1338,8 @@ function dayCalc(t){
     end = `<div class="hl"><span>Half day</span><b>Checked out</b></div>`;
     note = "Checked out as half day. Short time will not be counted for today.";
   } else if(t.kind === "live"){
-    if(t.liveRelief >= 1) rows.push(`<div><span>Late relief — posted "Late" (${t.lateNo} of ${ATT.LATE_RELIEF_PER_MONTH} this month)<br><small>Arrived ${fmtMin(t.lateBy)} late · forgiven up to ${fmtMin(ATT.LATE_RELIEF)} · overtime starts after 8h of actual work</small></span><b class="pos">+${fmtMin(t.liveRelief)}</b></div>`);
-    end = `<div class="hl"><span>${t.remaining ? "Still needed today" : t.liveRelief >= 1 ? "Done for today (with late relief)" : "Extra so far"}</span><b class="${t.remaining ? "" : "pos"}">${t.remaining ? fmtMin(t.remaining) : t.extraNow >= 1 || !(t.liveRelief >= 1) ? "+" + fmtMin(t.extraNow) : "✓"}</b></div>`;
+    if(t.liveRelief >= 1) rows.push(`<div><span>Late relief — posted "Late" (${t.lateNo} of ${ATT.LATE_RELIEF_PER_MONTH} this month)<br><small>Arrived ${fmtMin(t.lateBy)} late · added to hours (max ${fmtMin(ATT.LATE_RELIEF)})</small></span><b class="pos">+${fmtMin(t.liveRelief)}</b></div>`);
+    end = `<div class="hl"><span>${t.remaining ? "Still needed today" : t.extraNow >= 1 ? `Extra so far${t.liveRelief >= 1 ? " (incl. late relief)" : ""}` : t.liveRelief >= 1 ? "Done for today (with late relief)" : "Extra so far"}</span><b class="${t.remaining ? "" : "pos"}">${t.remaining ? fmtMin(t.remaining) : t.extraNow >= 1 || !(t.liveRelief >= 1) ? "+" + fmtMin(t.extraNow) : "✓"}</b></div>`;
     note = "Today is still running. Overtime is added after the day ends.";
   } else {
     end = `<div class="hl"><span>Counted</span><b class="neg">Not counted</b></div>`;
@@ -1405,6 +1408,7 @@ function mountWeekly(m, el, openDay){
           ${t.pre ? `<div><span>${t.pre} day${t.pre > 1 ? "s" : ""} before ${otStartLabel()} — not counted</span><b class="muted">—</b></div>`
                   : `<div><span>Worked − Required</span><b>${fmtMin(t.work)} − ${fmtMin(t.required)}</b></div>`}
           ${t.relief ? `<div><span>Half day relief (${t.half} day${t.half > 1 ? "s" : ""})</span><b class="pos">+${fmtMin(t.relief)}</b></div>` : ""}
+          ${t.lateRel ? `<div><span>Late relief (${t.lateDays} day${t.lateDays > 1 ? "s" : ""})</span><b class="pos">+${fmtMin(t.lateRel)}</b></div>` : ""}
           <div class="hl"><span>Overtime this week${ATT.SHORT_REDUCES_OVERTIME ? " (after short time)" : ""}</span><b class="${tone(ATT.SHORT_REDUCES_OVERTIME ? t.net : t.ot)}">${signed(ATT.SHORT_REDUCES_OVERTIME ? t.net : t.ot)}</b></div>
         </div>
       </div>
