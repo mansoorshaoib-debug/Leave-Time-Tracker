@@ -1,2 +1,11 @@
 [build]
   publish = "Website"
+
+# Portal search engines mein na aaye, frame mein na khule
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Robots-Tag = "noindex, nofollow"
+    X-Frame-Options = "DENY"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "no-referrer"

@@ -106,18 +106,22 @@ function summary(emp){
 /* ---------------- data ----------------
    Password ab server (Apps Script) par check hota hai.
    Browser ko sirf login karne wale ka data milta hai. */
+const NET_ERR = "Could not connect. Check your internet and try again.";
 async function api(body){
+  const ctl = typeof AbortController === "function" ? new AbortController() : null;
+  const timer = ctl ? setTimeout(() => ctl.abort(), 40000) : null;     // atka hua request refresh na rok de
   try{
     const r = await fetch(API_URL, {
       method: "POST",
       headers: { "Content-Type": "text/plain;charset=utf-8" },   // simple request: CORS preflight nahi
-      body: JSON.stringify(body)
+      body: JSON.stringify(body),
+      signal: ctl ? ctl.signal : undefined
     });
     return await r.json();
   }catch(err){
     console.error("API error", err);
-    return { ok:false, error:"Could not connect. Check your internet and try again." };
-  }
+    return { ok:false, net:true, error: NET_ERR };
+  }finally{ if(timer) clearTimeout(timer); }
 }
 
 /* ---------------- icons ---------------- */
@@ -298,6 +302,7 @@ function wireSegmented(id, panes){
    ========================================================= */
 function login(){
   const btn = document.querySelector("button.primary");
+  if(btn.disabled) return;                       // Enter do dafa daba diya
   withLoading(btn, "Signing in…", async () => {
     const id = $("empId").value.trim();
     const pass = $("code").value.trim();
@@ -345,6 +350,7 @@ window.addEventListener("DOMContentLoaded", () => {
     } else {
       $("result").innerHTML = `<p class="empty-note"><span class="spinner"></span>Loading…</p>`;
       api({ action:"login", id: e.id, pass: e.pass }).then(res => {
+        if(!res.ok && res.net){ $("result").innerHTML = `<p class="empty-note">${esc(NET_ERR)} <button type="button" class="logout" onclick="location.reload()">Retry</button></p>`; return; }
         if(!res.ok){ signOut(); return; }
         rememberLogin("ot-emp-data", res.employee);
         showEmployee(res.employee); restoreView(); startAutoRefresh(e.id, e.pass, res.employee);
@@ -358,7 +364,11 @@ window.addEventListener("DOMContentLoaded", () => {
     if(cached) show(cached);
     else $("adminResult").innerHTML = `<p class="empty-note"><span class="spinner"></span>Loading…</p>`;
     api({ action:"admin", user: a.user, pass: a.pass }).then(res => {
-      if(!res.ok){ if(!cached) signOut(); return; }
+      if(!res.ok){
+        if(!cached && res.net) $("adminResult").innerHTML = `<p class="empty-note">${esc(NET_ERR)} <button type="button" class="logout" onclick="location.reload()">Retry</button></p>`;
+        else if(!cached) signOut();
+        return;
+      }
       const fresh = { employees: res.employees || {}, issues: res.issues || [] };
       if(!cached || JSON.stringify(fresh) !== JSON.stringify(cached)){
         saveView(); rememberLogin("ot-admin-data", fresh); show(fresh);
@@ -435,6 +445,7 @@ function showEmployee(emp){
    ========================================================= */
 function checkAdmin(){
   const btn = document.querySelector("button.primary");
+  if(btn.disabled) return;
   withLoading(btn, "Checking…", async () => {
     const user = $("adminUser").value.trim(), pass = $("adminPass").value.trim();
     const res = await api({ action:"admin", user, pass });
@@ -454,7 +465,7 @@ function checkAdmin(){
    - Kisi naam par click: sirf usi ka poora data (#emp/Naam)
    - "All employees" / phone ka Back: wapas list
    --------------------------------------------------------- */
-const adminRoute = () => { const h = decodeURIComponent(location.hash.replace(/^#/, "")); return h.indexOf("emp/") === 0 ? h.slice(4) : ""; };
+const adminRoute = () => { let h = location.hash.replace(/^#/, ""); try{ h = decodeURIComponent(h); }catch(e){ return ""; } return h.indexOf("emp/") === 0 ? h.slice(4) : ""; };
 let listScroll = 0, openedFromList = false;
 
 function showAdminData(){
@@ -468,12 +479,14 @@ function renderAdmin(){
 }
 window.addEventListener("hashchange", () => {
   if(!document.querySelector(".card.admin")) return;
+  keep.day = keep.month = "";
   const id = adminRoute();
   renderAdmin();
   if(id) window.scrollTo(0, 0);
   else requestAnimationFrame(() => window.scrollTo(0, listScroll));
 });
 function openEmp(id){
+  keep.day = keep.month = "";
   listScroll = window.scrollY; openedFromList = true;
   location.hash = "emp/" + encodeURIComponent(id);
 }
@@ -851,8 +864,10 @@ function mountMonthWeeks(m, el, openDay){
     return;
   }
   let idx = m.months.length - 1, openWk = null;
+  if(keep.month){ const f = m.months.findIndex(x => x.key === keep.month); if(f >= 0) idx = f; }
   const render = () => {
     const mo = m.months[idx];
+    keep.month = idx === m.months.length - 1 ? "" : mo.key;
     const nextName = monthShort(new Date(mo.start.getFullYear(), mo.start.getMonth() + 1, 1));
     const weeks = [];
     for(let ws = weekStart(mo.start), n = 1; ws <= mo.end && ws <= m.today; ws = addDays(ws, 7), n++){
@@ -981,6 +996,7 @@ const ATT = {
   LATE_RELIEF: 60,                // "Late" likha -> jitna late aaya utna maaf, max 1h (Attendance.gs LATE_RELIEF_MINUTES)
   LATE_RELIEF_PER_MONTH: 3,       // mahine mein 3 dafa (Attendance.gs LATE_RELIEF_PER_MONTH)
   DAY_START_HOUR: 5,
+  TZ_OFFSET: 300,                 // Pakistan UTC+5 (Attendance.gs TZ_OFFSET_MINUTES) — browser ka timezone kuch bhi ho
   LIVE_MAX_MIN: 14 * 60
 };
 
@@ -998,7 +1014,10 @@ const ymd = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")
 const startOfDay = d => { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; };
 const addDays = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
 const weekStart = d => addDays(startOfDay(d), -((d.getDay() + 6) % 7));            // Monday
-const workToday = () => startOfDay(new Date(Date.now() - ATT.DAY_START_HOUR * 36e5));  // 5 AM tak pichla din
+const workToday = () => {                                                      // 5 AM (Pakistan time) tak pichla din
+  const p = new Date(Date.now() + (ATT.TZ_OFFSET - ATT.DAY_START_HOUR * 60) * 60000);
+  return new Date(p.getUTCFullYear(), p.getUTCMonth(), p.getUTCDate());
+};
 const dayName = (d, len) => d.toLocaleDateString("en-GB", { weekday: len || "short" });
 const shortDate = d => d.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
 const longDate = d => d.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
@@ -1097,6 +1116,8 @@ function totals(days){
   return t;
 }
 
+/* Data refresh hone par employee/admin ka chuna hua din / mahina na badle */
+const keep = { day: "", month: "" };
 const _models = new WeakMap();
 function attModel(emp){
   if(_models.has(emp)) return _models.get(emp);
@@ -1352,7 +1373,9 @@ function dayCalc(t){
 /* ---------- WORKING HOURS · DAILY ---------- */
 function mountDaily(m, el){
   let cur = m.today;
+  if(keep.day){ const k = parseDate(keep.day); if(k) cur = k > m.today ? m.today : k; }
   const render = () => {
+    keep.day = ymd(cur) === ymd(m.today) ? "" : ymd(cur);
     const t = dayAt(m, cur);
     const isToday = ymd(cur) === ymd(m.today);
     const statusText = t.kind === "live" ? t.liveStatus : t.kind === "notyet" ? "Not checked in yet" : (KIND[t.kind] || "No record");
@@ -1427,8 +1450,10 @@ function mountMonthly(m, el, openDay){
     return;
   }
   let idx = m.months.length - 1;
+  if(keep.month){ const f = m.months.findIndex(x => x.key === keep.month); if(f >= 0) idx = f; }
   const render = () => {
     const mo = m.months[idx];
+    keep.month = idx === m.months.length - 1 ? "" : mo.key;
     const nextName = monthShort(new Date(mo.start.getFullYear(), mo.start.getMonth() + 1, 1));
     const shown = mo.days.filter(x => x.kind !== "nodata" && x.kind !== "upcoming").slice().reverse();
     el.innerHTML = `
