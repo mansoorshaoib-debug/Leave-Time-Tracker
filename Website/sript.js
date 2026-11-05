@@ -1638,7 +1638,7 @@ function viewLeaves(emp, s, m){
 }
 
 /* Chutti ki requests (#absence) + status: Waiting / Approved / Rejected */
-const REQ_ST = { Approved: ["✅ Approved", ""], Rejected: ["❌ Rejected", "red"], Waiting: ["⏳ Waiting", "neutral"] };
+const REQ_ST = { Approved: ["✅ Approved", ""], Rejected: ["❌ Rejected", "red"], Waiting: ["⏳ Waiting", "neutral"], Unclear: ["❓ Date unclear", "neutral"] };
 function requestsBlock(list){
   if(!list || !list.length) return "";
   return `
@@ -1647,7 +1647,7 @@ function requestsBlock(list){
       const st = REQ_ST[r.status] || REQ_ST.Waiting;
       const when = shortDateOf(String(r.posted || "").slice(0, 10));
       const days = (r.dates || []).map(shortDateOf).join(", ");
-      const who = r.status === "Waiting" ? "Waiting for approval" : `${esc(r.status)} by ${esc(r.by || "—")}`;
+      const who = r.status === "Waiting" ? "Waiting for approval" : r.status === "Unclear" ? "Date not clear — edit your Slack message with the exact date" : `${esc(r.status)} by ${esc(r.by || "—")}`;
       return `
       <div class="list-item" style="animation-delay:${Math.min(i, 12) * 30}ms">
         <div class="li-body">
