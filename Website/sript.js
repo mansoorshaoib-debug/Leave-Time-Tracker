@@ -382,7 +382,7 @@ window.addEventListener("DOMContentLoaded", () => {
    (Slack message -> ~1 minute mein Sheet -> 30 second mein yahan) */
 const REFRESH_MS = 30 * 1000;      // har 30 second naya data check
 let session = null;
-const sigOf = e => JSON.stringify([e.attendance, e.overtime, e.leaves, e.extraLeaves, e.extraManual]);
+const sigOf = e => JSON.stringify([e.attendance, e.overtime, e.leaves, e.extraLeaves, e.extraManual, e.requests]);
 function startAutoRefresh(id, pass, emp){
   const first = !session;
   session = { id, pass, sig: sigOf(emp) };          // sirf memory mein, kahin save nahi hota
@@ -685,6 +685,7 @@ function adminHome(){
         <div class="stat"><div class="ico" style="background:var(--red)">${I.cal}</div><span class="num count-up" data-to="${notIn + leave}">0</span><span class="label">Not in${leave ? ` · ${leave} on leave` : ""}</span></div>
       </div>
 
+      ${pendingBlock(all)}
       <label class="search">${I.search}<input id="empSearch" type="search" placeholder="Search employee" autocomplete="off"></label>
 
       <div class="elist" id="empList">
@@ -708,6 +709,7 @@ function adminHome(){
     </div>`;
 
   box.querySelectorAll(".erow").forEach(r => r.onclick = () => openEmp(r.dataset.id));
+  box.querySelectorAll(".preq").forEach(r => r.onclick = () => openEmp(r.dataset.id));
   $("empSearch").oninput = e => {
     const q = e.target.value.trim().toLowerCase();
     let shown = 0;
@@ -715,6 +717,25 @@ function adminHome(){
     $("noMatch").hidden = shown > 0;
   };
   animateNumbers(box);
+}
+
+/* Admin home: jin requests ka faisla baqi hai */
+function pendingBlock(all){
+  const pend = [];
+  all.forEach(x => (x.emp.requests || []).forEach(r => { if(r.status === "Waiting") pend.push({ ...r, id: x.id, name: x.emp.name || x.id }); }));
+  if(!pend.length) return "";
+  pend.sort((a, b) => String(a.posted) < String(b.posted) ? -1 : 1);
+  return `
+    <div class="sub-h">Leave requests waiting <span class="pill">${pend.length}</span></div>
+    <div class="list">${pend.map((r, i) => `
+      <div class="list-item preq" role="button" tabindex="0" data-id="${esc(r.id)}" style="animation-delay:${Math.min(i, 12) * 30}ms;cursor:pointer">
+        <div class="li-body">
+          <div class="li-title">${esc(r.name)} <span class="li-sub">· ${esc(shortDateOf(String(r.posted).slice(0, 10)))}</span></div>
+          <div class="li-sub">${esc(r.text || "Leave request")}${(r.dates || []).length ? ` · ${esc(r.dates.map(shortDateOf).join(", "))}` : ""}</div>
+        </div>
+        <span class="badge neutral">⏳ Waiting</span>
+      </div>`).join("")}</div>
+    <p class="att-note">Approve / reject from the Slack DM (✅ ❌ buttons).</p>`;
 }
 
 /* ---------- Ek employee: sirf usi ka data ---------- */
@@ -851,6 +872,7 @@ function adminLeaves(emp, s, m){
         <div class="tot"><span>${s.remaining < 0 ? "Over limit" : "Leaves available"}</span><b class="${s.remaining < 0 ? "neg" : ""}">${s.remaining}</b></div>
       </div>
     </div></div>
+    ${requestsBlock(emp.requests)}
     ${segmented("alSeg", `Taken <span class="pill">${s.usedCount}</span>`, `Extra <span class="pill">${s.extraAll}</span>`, `Cut <span class="pill">${s.otCut}</span>`)}
     <div id="alUsed">${groups(used, "used")}</div>
     <div id="alExtra" hidden>${extra.length || !s.extraAll ? groups(extra, "extra") : `<div class="list"><p class="empty-note">+${s.extraAll} extra leave(s).</p></div>`}</div>
@@ -1607,11 +1629,34 @@ function viewLeaves(emp, s, m){
       </div>
     </div>
     ${nextLeavePanel(m)}
+    ${requestsBlock(emp.requests)}
     ${segmented("lvSeg", `Leaves taken <span class="pill">${s.used.length}</span>`, `Extra earned <span class="pill">${s.extraAll}</span>`)}
     <div id="paneUsed">${leaveList(s.used, "used")}</div>
     <div id="paneExtra" hidden>${extraItems.length || !s.extraAll
         ? leaveList(extraItems, "extra")
         : `<div class="list"><p class="empty-note">${s.extraAll} extra leave(s) earned.</p></div>`}</div>`;
+}
+
+/* Chutti ki requests (#absence) + status: Waiting / Approved / Rejected */
+const REQ_ST = { Approved: ["✅ Approved", ""], Rejected: ["❌ Rejected", "red"], Waiting: ["⏳ Waiting", "neutral"] };
+function requestsBlock(list){
+  if(!list || !list.length) return "";
+  return `
+    <div class="sub-h">Leave requests <span class="pill">${list.length}</span></div>
+    <div class="list">${list.map((r, i) => {
+      const st = REQ_ST[r.status] || REQ_ST.Waiting;
+      const when = shortDateOf(String(r.posted || "").slice(0, 10));
+      const days = (r.dates || []).map(shortDateOf).join(", ");
+      const who = r.status === "Waiting" ? "Waiting for approval" : `${esc(r.status)} by ${esc(r.by || "—")}`;
+      return `
+      <div class="list-item" style="animation-delay:${Math.min(i, 12) * 30}ms">
+        <div class="li-body">
+          <div class="li-title">${esc(r.text || "Leave request")}</div>
+          <div class="li-sub">Asked ${esc(when)}${days ? ` · Leave: ${esc(days)}` : ""} · ${who}</div>
+        </div>
+        <span class="badge ${st[1]}">${st[0]}</span>
+      </div>`;
+    }).join("")}</div>`;
 }
 
 /* Admin: attendance issues (Slack messages jo samajh nahi aaye, check out bhool gaye, etc.) */
