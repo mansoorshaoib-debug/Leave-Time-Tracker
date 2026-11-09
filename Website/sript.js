@@ -117,7 +117,9 @@ async function api(body){
       body: JSON.stringify(body),
       signal: ctl ? ctl.signal : undefined
     });
-    return await r.json();
+    const j = await r.json();
+    if(j && j.holidays && typeof ATT !== "undefined") ATT.HOLIDAYS = j.holidays;       // Holidays tab (public chuttiyan)
+    return j;
   }catch(err){
     console.error("API error", err);
     return { ok:false, net:true, error: NET_ERR };
@@ -382,7 +384,7 @@ window.addEventListener("DOMContentLoaded", () => {
    (Slack message -> ~1 minute mein Sheet -> 30 second mein yahan) */
 const REFRESH_MS = 30 * 1000;      // har 30 second naya data check
 let session = null;
-const sigOf = e => JSON.stringify([e.attendance, e.overtime, e.leaves, e.extraLeaves, e.extraManual, e.requests]);
+const sigOf = e => JSON.stringify([e.attendance, e.overtime, e.leaves, e.extraLeaves, e.extraManual, e.requests, ATT.HOLIDAYS]);
 function startAutoRefresh(id, pass, emp){
   const first = !session;
   session = { id, pass, sig: sigOf(emp) };          // sirf memory mein, kahin save nahi hota
@@ -506,7 +508,7 @@ function todayInfo(m){
   }
   if(t.final) return { text: `Checked out${t.lastOut ? " · " + t.lastOut : ""}${late}`, cls: "info", key: "out" };
   if(t.kind === "leave") return { text: "On leave", cls: "mute", key: "leave" };
-  if(t.kind === "off") return { text: "Weekly off", cls: "mute", key: "off" };
+  if(t.kind === "off") return { text: t.holiday ? "Holiday · " + t.holiday : "Weekly off", cls: "mute", key: "off" };
   if(t.kind === "notyet") return { text: "Not checked in" + (t.late === "Informed" ? " · Late (informed)" : ""), cls: "bad", key: "notin" };
   return { text: "No record", cls: "mute", key: "notin" };
 }
@@ -619,7 +621,7 @@ function monthReq(m, mo){
   const c = { days: 0, counted: 0, leave: 0, incomplete: 0, absent: 0, today: 0, upcoming: 0, nodata: 0 };
   if(!mo) return c;
   for(let d = new Date(mo.start); d <= mo.end; d = addDays(d, 1)){
-    if(ATT.OFF_DAYS.includes(d.getDay())) continue;
+    if(isOffDate(d)) continue;
     c.days++;
     const x = dayAt(m, d);
     if(x.final) c.counted++;
@@ -1009,6 +1011,7 @@ async function refreshAdmin(){
 const ATT = {
   TARGET: 480,                    // 8h
   OFF_DAYS: [0],                  // 0 = Sunday
+  HOLIDAYS: {},                   // { 'yyyy-mm-dd': 'Reason' } — Google Sheet "Holidays" tab: us din sab ke liye off, saara kaam overtime
   PER_LEAVE: 480,                 // 8h overtime = 1 extra leave
   ALLOWED_BREAK: 60,              // Attendance.gs ALLOWED_BREAK_MINUTES (sirf dikhane ke liye)
   GRACE: 10,                      // Attendance.gs GRACE_MINUTES: 1h 10m tak break = 1h
@@ -1033,6 +1036,7 @@ const fmtMin = m => {
 const signed = m => (Math.round(m) > 0 ? "+" : Math.round(m) < 0 ? "−" : "") + fmtMin(m);
 const tone = m => (Math.round(m) > 0 ? "pos" : Math.round(m) < 0 ? "neg" : "");
 const ymd = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+const isOffDate = d => ATT.OFF_DAYS.includes(d.getDay()) || !!ATT.HOLIDAYS[ymd(d)];
 const startOfDay = d => { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; };
 const addDays = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
 const weekStart = d => addDays(startOfDay(d), -((d.getDay() + 6) % 7));            // Monday
@@ -1076,12 +1080,13 @@ const KIND = {
   done: "Completed", half: "Half day", offWorked: "Sunday · Worked", live: "In progress", incomplete: "No check-out",
   leave: "Leave", off: "Weekly off", absent: "No check-in", notyet: "Not checked in", upcoming: "", nodata: ""
 };
+const kindText = d => d.holiday && d.kind === "off" ? "Holiday" : d.holiday && d.kind === "offWorked" ? "Holiday · Worked" : KIND[d.kind];
 const LIVE_TEXT = { "Working now": "Working", "On break": "On break", "At namaz": "At namaz", "Half day": "Half day (checked out)" };
 
 /* Ek din ka record banao (attendance, leave, off, absent…) */
 function makeDay(d, r, leave, flags){
-  const off = ATT.OFF_DAYS.includes(d.getDay());
-  const day = { d, key: ymd(d), off, r, leave, isToday: !!flags.today, preStart: ymd(d) < ATT.OT_START,
+  const off = isOffDate(d);
+  const day = { d, key: ymd(d), off, holiday: ATT.HOLIDAYS[ymd(d)] || "", r, leave, isToday: !!flags.today, preStart: ymd(d) < ATT.OT_START,
     work: 0, brk: 0, namaz: 0, ot: 0, short: 0, required: 0, net: 0, final: false };
   if(r){
     Object.assign(day, { work: r.work, brk: r.brk, namaz: r.namaz, firstIn: r.firstIn, lastOut: r.lastOut, late: r.late || "",
@@ -1290,10 +1295,10 @@ function rightPart(day){
 
 function dayRow(day, opts = {}){
   const d = day.d;
-  const status = day.kind === "live" ? day.liveStatus : KIND[day.kind];
+  const status = day.kind === "live" ? day.liveStatus : kindText(day);
   let main, sub = "";
   if(day.r){
-    main = `${fmtMin(day.work)}<span class="of"> / ${day.required ? fmtMin(day.required) : "Sunday"}</span>`;
+    main = `${fmtMin(day.work)}<span class="of"> / ${day.required ? fmtMin(day.required) : (day.holiday ? "Holiday" : "Sunday")}</span>`;
     const time = day.firstIn ? `${esc(day.firstIn)} – ${esc(day.lastOut || "…")}` : "";
     sub = [time, day.brk ? `Break ${fmtMin(day.brk)}` : "", day.namaz ? `Namaz ${fmtMin(day.namaz)}` : ""].filter(Boolean).join(" · ");
     if(day.kind === "incomplete") sub += ` · <span class="neg">Not counted</span>`;
@@ -1308,7 +1313,7 @@ function dayRow(day, opts = {}){
   } else if(day.kind === "upcoming" || day.kind === "nodata"){
     main = `<span class="muted-main">—</span>`;
   } else {
-    main = `<span class="muted-main${day.kind === "absent" ? " neg" : ""}">${KIND[day.kind]}</span>`;
+    main = `<span class="muted-main${day.kind === "absent" ? " neg" : ""}">${kindText(day)}</span>`;
   }
   return `
     <div class="arow k-${day.kind}${day.isToday ? " is-today" : ""}${opts.click ? " click" : ""}" data-day="${day.key}">
@@ -1345,7 +1350,7 @@ function breakRows(t, rows, label){
 function dayCalc(t){
   if(!t.r){
     const msg = t.kind === "leave" ? "On leave — no hours required."
-      : t.kind === "off" ? "Sunday is the weekly off. If you work on Sunday, all hours count as overtime."
+      : t.kind === "off" ? (t.holiday ? `Public holiday (${t.holiday}). If you work today, all hours count as overtime.` : "Sunday is the weekly off. If you work on Sunday, all hours count as overtime.")
       : t.kind === "notyet" ? "No check-in on Slack yet today."
       : t.kind === "upcoming" ? "This day has not come yet."
       : "No check-in found on Slack for this day.";
@@ -1373,7 +1378,7 @@ function dayCalc(t){
   }
   if(t.breakGrace >= 1) rows.push(`<div><span>Break grace: ${fmtMin(t.brk)} break counted as ${fmtMin(ATT.ALLOWED_BREAK)}</span><b class="pos">+${fmtMin(t.breakGrace)}</b></div>`);
   rows.push(`<div class="hl"><span>Worked${t.kind === "live" ? " so far" : ""}${t.namaz && ATT.NAMAZ_COUNTS_AS_WORK ? `<br><small>includes namaz ${fmtMin(t.namaz)}</small>` : ""}</span><b>${fmtMin(t.work)}</b></div>`);
-  rows.push(`<div><span>Required${t.off ? " (Sunday — weekly off)" : ""}</span><b>−${fmtMin(t.required)}</b></div>`);
+  rows.push(`<div><span>Required${t.off ? (t.holiday ? " (holiday — " + esc(t.holiday) + ")" : " (Sunday — weekly off)") : ""}</span><b>−${fmtMin(t.required)}</b></div>`);
   if(t.lateRelief >= 1) rows.push(`<div><span>Late relief — posted "Late" (${t.lateNo} of ${ATT.LATE_RELIEF_PER_MONTH} this month)<br><small>Arrived ${fmtMin(t.lateBy)} late · added to hours (max ${fmtMin(ATT.LATE_RELIEF)})</small></span><b class="pos">+${fmtMin(t.lateRelief)}</b></div>`);
   else if(t.lateNo > ATT.LATE_RELIEF_PER_MONTH && t.final) rows.push(`<div><span>Posted "Late" — ${ordinal(t.lateNo)} time this month<br><small>Only ${ATT.LATE_RELIEF_PER_MONTH} late reliefs per month</small></span><b class="muted">No relief</b></div>`);
   let end, note = "";
@@ -1410,15 +1415,15 @@ function mountDaily(m, el){
     keep.day = ymd(cur) === ymd(m.today) ? "" : ymd(cur);
     const t = dayAt(m, cur);
     const isToday = ymd(cur) === ymd(m.today);
-    const statusText = t.kind === "live" ? t.liveStatus : t.kind === "notyet" ? "Not checked in yet" : (KIND[t.kind] || "No record");
+    const statusText = t.kind === "live" ? t.liveStatus : t.kind === "notyet" ? "Not checked in yet" : (kindText(t) || "No record");
     const req = t.required || 0, rel = t.kind === "live" ? (t.liveRelief || 0) : t.final ? (t.lateRelief || 0) : 0;
     const shown = t.work + rel;                                   // relief ghanton mein jud jata hai
     const live = t.kind === "live" && !t.halfDay && req > 0;      // aaj: abhi tak ka overtime / short (din khatam hone par pakka)
     const liveNet = live ? Math.round(shown - req) : 0;
     const pct = req ? shown / req : (t.work ? 1 : 0);
     const ring = t.off && !t.r
-      ? progressRing(0, "var(--green)", "Off", "Sunday")
-      : progressRing(pct, pct >= 1 ? "var(--green)" : "var(--blue)", fmtMin(shown), req ? `of ${fmtMin(req)}` : "Sunday");
+      ? progressRing(0, "var(--green)", "Off", t.holiday ? "Holiday" : "Sunday")
+      : progressRing(pct, pct >= 1 ? "var(--green)" : "var(--blue)", fmtMin(shown), req ? `of ${fmtMin(req)}` : (t.holiday ? "Holiday" : "Sunday"));
     el.innerHTML = `
       <div class="navrow">
         <button type="button" class="nb" data-d="-1" aria-label="Previous day">‹</button>
@@ -1432,7 +1437,7 @@ function mountDaily(m, el){
           <div class="facts">
             <div><small>Check in</small><b>${esc(t.firstIn || "—")}</b></div>
             <div><small>Last check-out</small><b>${esc(t.lastOut || "—")}</b></div>
-            <div><small>Required</small><b>${t.r || t.kind === "notyet" ? (req ? fmtMin(req) : "0h (Sunday)") : "—"}${rel >= 1 ? ` <span class="pos rel">+${fmtMin(rel)} late relief</span>` : ""}</b></div>
+            <div><small>Required</small><b>${t.r || t.kind === "notyet" ? (req ? fmtMin(req) : (t.holiday ? "0h (Holiday)" : "0h (Sunday)")) : "—"}${rel >= 1 ? ` <span class="pos rel">+${fmtMin(rel)} late relief</span>` : ""}</b></div>
             <div><small>${t.final ? (t.net < 0 ? "Short" : "Overtime") : live ? (liveNet < 0 ? "Short so far" : "Overtime so far") : "Overtime"}</small><b class="${t.preStart ? "muted" : tone(t.final ? t.net : live ? liveNet : 0)}">${t.final ? (t.preStart ? "Not counted" : t.net ? signed(t.net) : "0m") : live ? (liveNet ? signed(liveNet) : "0m") : "—"}</b></div>
           </div>
         </div>
@@ -1530,7 +1535,7 @@ function otRow(h){
   return `
     <div class="arow click" data-day="${ymd(h.d)}">
       <div class="adate"><b>${h.d.getDate()}</b><small>${dayName(h.d)}</small></div>
-      <div class="abody"><div class="amain">${fmtMin(h.work)}<span class="of"> / ${h.required ? fmtMin(h.required) : "Sunday"}</span></div>
+      <div class="abody"><div class="amain">${fmtMin(h.work)}<span class="of"> / ${h.required ? fmtMin(h.required) : (h.holiday ? "Holiday" : "Sunday")}</span></div>
         <div class="asub">Worked / required</div></div>
       <div class="aright"><span class="anet ${tone(net)}">${net ? signed(net) : "0m"}</span><small class="ast">${h.short && !h.ot ? "Short" : "Overtime"}</small></div>
     </div>`;
