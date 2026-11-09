@@ -1091,7 +1091,7 @@ function makeDay(d, r, leave, flags){
   if(r){
     Object.assign(day, { work: r.work, brk: r.brk, namaz: r.namaz, firstIn: r.firstIn, lastOut: r.lastOut, late: r.late || "",
       startGrace: num(r.startGrace), breakGrace: num(r.breakGrace), lateRelief: num(r.lateRelief), lateNo: num(r.lateNo), lateBy: num(r.lateBy) });
-    day.required = r.required != null ? r.required : (off ? 0 : ATT.TARGET);
+    day.required = off ? 0 : r.required != null ? r.required : ATT.TARGET;     // off din (Sunday / holiday): required hamesha 0
     if(r.final){
       day.final = true;
       if(!day.preStart){ day.ot = r.ot; day.short = r.short; day.net = r.ot - r.short; }   // start se pehle: 0
@@ -1418,7 +1418,7 @@ function mountDaily(m, el){
     const statusText = t.kind === "live" ? t.liveStatus : t.kind === "notyet" ? "Not checked in yet" : (kindText(t) || "No record");
     const req = t.required || 0, rel = t.kind === "live" ? (t.liveRelief || 0) : t.final ? (t.lateRelief || 0) : 0;
     const shown = t.work + rel;                                   // relief ghanton mein jud jata hai
-    const live = t.kind === "live" && !t.halfDay && req > 0;      // aaj: abhi tak ka overtime / short (din khatam hone par pakka)
+    const live = t.kind === "live" && !t.halfDay && (req > 0 || t.off);      // aaj: abhi tak ka overtime / short (din khatam hone par pakka)
     const liveNet = live ? Math.round(shown - req) : 0;
     const pct = req ? shown / req : (t.work ? 1 : 0);
     const ring = t.off && !t.r
