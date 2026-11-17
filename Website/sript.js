@@ -1080,6 +1080,8 @@ const KIND = {
   done: "Completed", half: "Half day", offWorked: "Sunday · Worked", live: "In progress", incomplete: "No check-out",
   leave: "Leave", off: "Weekly off", absent: "No check-in", notyet: "Not checked in", upcoming: "", nodata: ""
 };
+/* Label when no hours are required that day: Holiday / Sunday / Leave (never "Sunday" on a weekday) */
+const zeroLabel = d => d.holiday ? "Holiday" : d.off ? "Sunday" : d.kind === "leave" ? "Leave" : d.halfDay ? "Half day" : "Off";
 const kindText = d => d.holiday && d.kind === "off" ? "Holiday" : d.holiday && d.kind === "offWorked" ? "Holiday · Worked" : KIND[d.kind];
 const LIVE_TEXT = { "Working now": "Working", "On break": "On break", "At namaz": "At namaz", "Half day": "Half day (checked out)" };
 
@@ -1298,7 +1300,7 @@ function dayRow(day, opts = {}){
   const status = day.kind === "live" ? day.liveStatus : kindText(day);
   let main, sub = "";
   if(day.r){
-    main = `${fmtMin(day.work)}<span class="of"> / ${day.required ? fmtMin(day.required) : (day.holiday ? "Holiday" : "Sunday")}</span>`;
+    main = `${fmtMin(day.work)}<span class="of"> / ${day.required ? fmtMin(day.required) : zeroLabel(day)}</span>`;
     const time = day.firstIn ? `${esc(day.firstIn)} – ${esc(day.lastOut || "…")}` : "";
     sub = [time, day.brk ? `Break ${fmtMin(day.brk)}` : "", day.namaz ? `Namaz ${fmtMin(day.namaz)}` : ""].filter(Boolean).join(" · ");
     if(day.kind === "incomplete") sub += ` · <span class="neg">Not counted</span>`;
@@ -1423,7 +1425,7 @@ function mountDaily(m, el){
     const pct = req ? shown / req : (t.work ? 1 : 0);
     const ring = t.off && !t.r
       ? progressRing(0, "var(--green)", "Off", t.holiday ? "Holiday" : "Sunday")
-      : progressRing(pct, pct >= 1 ? "var(--green)" : "var(--blue)", fmtMin(shown), req ? `of ${fmtMin(req)}` : (t.holiday ? "Holiday" : "Sunday"));
+      : progressRing(pct, pct >= 1 ? "var(--green)" : "var(--blue)", fmtMin(shown), req ? `of ${fmtMin(req)}` : zeroLabel(t));
     el.innerHTML = `
       <div class="navrow">
         <button type="button" class="nb" data-d="-1" aria-label="Previous day">‹</button>
@@ -1437,7 +1439,7 @@ function mountDaily(m, el){
           <div class="facts">
             <div><small>Check in</small><b>${esc(t.firstIn || "—")}</b></div>
             <div><small>Last check-out</small><b>${esc(t.lastOut || "—")}</b></div>
-            <div><small>Required</small><b>${t.r || t.kind === "notyet" ? (req ? fmtMin(req) : (t.holiday ? "0h (Holiday)" : "0h (Sunday)")) : "—"}${rel >= 1 ? ` <span class="pos rel">+${fmtMin(rel)} late relief</span>` : ""}</b></div>
+            <div><small>Required</small><b>${t.r || t.kind === "notyet" ? (req ? fmtMin(req) : "0h (" + zeroLabel(t) + ")") : "—"}${rel >= 1 ? ` <span class="pos rel">+${fmtMin(rel)} late relief</span>` : ""}</b></div>
             <div><small>${t.final ? (t.net < 0 ? "Short" : "Overtime") : live ? (liveNet < 0 ? "Short so far" : "Overtime so far") : "Overtime"}</small><b class="${t.preStart ? "muted" : tone(t.final ? t.net : live ? liveNet : 0)}">${t.final ? (t.preStart ? "Not counted" : t.net ? signed(t.net) : "0m") : live ? (liveNet ? signed(liveNet) : "0m") : "—"}</b></div>
           </div>
         </div>
@@ -1535,7 +1537,7 @@ function otRow(h){
   return `
     <div class="arow click" data-day="${ymd(h.d)}">
       <div class="adate"><b>${h.d.getDate()}</b><small>${dayName(h.d)}</small></div>
-      <div class="abody"><div class="amain">${fmtMin(h.work)}<span class="of"> / ${h.required ? fmtMin(h.required) : (h.holiday ? "Holiday" : "Sunday")}</span></div>
+      <div class="abody"><div class="amain">${fmtMin(h.work)}<span class="of"> / ${h.required ? fmtMin(h.required) : zeroLabel(h)}</span></div>
         <div class="asub">Worked / required</div></div>
       <div class="aright"><span class="anet ${tone(net)}">${net ? signed(net) : "0m"}</span><small class="ast">${h.short && !h.ot ? "Short" : "Overtime"}</small></div>
     </div>`;
