@@ -728,12 +728,12 @@ function pendingBlock(all){
   if(!pend.length) return "";
   pend.sort((a, b) => String(a.posted) < String(b.posted) ? -1 : 1);
   return `
-    <div class="sub-h">Leave requests waiting <span class="pill">${pend.length}</span></div>
+    <div class="sub-h">Requests waiting <span class="pill">${pend.length}</span></div>
     <div class="list">${pend.map((r, i) => `
       <div class="list-item preq" role="button" tabindex="0" data-id="${esc(r.id)}" style="animation-delay:${Math.min(i, 12) * 30}ms;cursor:pointer">
         <div class="li-body">
           <div class="li-title">${esc(r.name)} <span class="li-sub">· ${esc(shortDateOf(String(r.posted).slice(0, 10)))}</span></div>
-          <div class="li-sub">${esc(r.text || "Leave request")}${(r.dates || []).length ? ` · ${esc(r.dates.map(shortDateOf).join(", "))}` : ""}</div>
+          <div class="li-sub">${r.type && r.type !== "Leave" ? `<b>${esc(r.type)}</b> · ` : ""}${esc(r.text || "Leave request")}${(r.dates || []).length ? ` · ${esc(r.dates.map(shortDateOf).join(", "))}` : ""}</div>
         </div>
         <span class="badge neutral">⏳ Waiting</span>
       </div>`).join("")}</div>
@@ -1643,7 +1643,7 @@ function viewLeaves(emp, s, m){
 }
 
 /* Chutti ki requests (#absence) + status: Waiting / Approved / Rejected */
-const REQ_ST = { Approved: ["✅ Approved", ""], Rejected: ["❌ Rejected", "red"], Waiting: ["⏳ Waiting", "neutral"], Unclear: ["❓ Date unclear", "neutral"] };
+const REQ_ST = { Approved: ["✅ Approved", ""], Rejected: ["❌ Rejected", "red"], Waiting: ["⏳ Waiting", "neutral"], Unclear: ["❓ Date unclear", "neutral"], Cancelled: ["🗑 Cancelled", "neutral"] };
 function requestsBlock(list){
   if(!list || !list.length) return "";
   return `
@@ -1652,12 +1652,13 @@ function requestsBlock(list){
       const st = REQ_ST[r.status] || REQ_ST.Waiting;
       const when = shortDateOf(String(r.posted || "").slice(0, 10));
       const days = (r.dates || []).map(shortDateOf).join(", ");
-      const who = r.status === "Waiting" ? "Waiting for approval" : r.status === "Unclear" ? "Date not clear — edit your Slack message with the exact date" : `${esc(r.status)} by ${esc(r.by || "—")}`;
+      const who = r.status === "Waiting" ? "Waiting for approval" : r.status === "Unclear" ? "Date not clear — edit your Slack message with the exact date"
+        : r.status === "Cancelled" ? "Message deleted" : `${esc(r.status)} by ${esc(r.by || "—")}`;
       return `
       <div class="list-item" style="animation-delay:${Math.min(i, 12) * 30}ms">
         <div class="li-body">
           <div class="li-title">${esc(r.text || "Leave request")}</div>
-          <div class="li-sub">Asked ${esc(when)}${days ? ` · Leave: ${esc(days)}` : ""} · ${who}</div>
+          <div class="li-sub">${r.type && r.type !== "Leave" ? `${esc(r.type)} · ` : ""}Asked ${esc(when)}${days ? ` · ${r.type && r.type !== "Leave" ? "Date" : "Leave"}: ${esc(days)}` : ""} · ${who}</div>
         </div>
         <span class="badge ${st[1]}">${st[0]}</span>
       </div>`;
