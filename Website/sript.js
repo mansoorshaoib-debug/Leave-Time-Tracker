@@ -8,6 +8,7 @@
 
 const API_URL = "https://script.google.com/macros/s/AKfycbx-whgnAdu_84LhUL879oUYJ0q5grGgHSHreq4UCMnrCvWmvApuBcU_MRdSV5URX3513Q/exec";
 const ANNUAL_LEAVES = 10;
+const OT_HISTORY_WEEKS = 9;   // Overtime history: ~2 months of weeks (server sends the same)
 
 let data = {};      // admin: sab employees (passwords ke baghair)
 let adminIssues = [];
@@ -1201,7 +1202,7 @@ function attModel(emp){
   const cuts = earned.filter(e => e.type === "Cut");
 
   // Overtime history: sirf aakhri 2 haftay (server "Overtime History" tab, warna yahin se)
-  const histFrom = addDays(weekStart(today), -7);
+  const histFrom = addDays(weekStart(today), -7 * (OT_HISTORY_WEEKS - 1));
   const otHistory = srv && Array.isArray(srv.history)
     ? srv.history.map(h => ({ d: parseDate(h.date), work: num(h.work), required: num(h.required), ot: num(h.ot), short: num(h.short) })).filter(h => h.d)
     : days.filter(x => x.final && !x.preStart && x.d >= histFrom).map(x => ({ d: x.d, work: x.work, required: x.required, ot: x.ot, short: x.short }));
@@ -1557,12 +1558,12 @@ function earnedRow(e){
 function mountOvertime(m, el, openDay){
   const weeks = [];
   const ws0 = weekStart(m.today);
-  [ws0, addDays(ws0, -7)].forEach((ws, i) => {
+  Array.from({ length: OT_HISTORY_WEEKS }, (_, i) => addDays(ws0, -7 * i)).forEach((ws, i) => {
     const we = addDays(ws, 6);
     const list = m.otHistory.filter(h => h.d >= ws && h.d <= we).sort((a, b) => b.d - a.d);
     if(!list.length) return;
     const t = list.reduce((s, h) => ({ work: s.work + h.work, required: s.required + h.required, ot: s.ot + h.ot, short: s.short + h.short }), { work: 0, required: 0, ot: 0, short: 0 });
-    weeks.push({ label: i ? "Last week" : "This week", ws, we, list, t });
+    weeks.push({ label: i === 0 ? "This week" : i === 1 ? "Last week" : "Week", ws, we, list, t });
   });
   const totalLeaves = m.earned.length;
   el.innerHTML = `
@@ -1581,8 +1582,8 @@ function mountOvertime(m, el, openDay){
             <div class="aright"><span class="anet ${tone(net)}">${net ? signed(net) : "0m"}</span><small class="ast">Week total</small></div>
           </div>
         </div>`;
-      }).join("") || `<div class="alist"><p class="empty-note">No completed days in the last 2 weeks.</p></div>`}
-      <p class="att-note">Only the latest 2 weeks are shown here. Your overtime balance and earned leaves are saved permanently.</p>
+      }).join("") || `<div class="alist"><p class="empty-note">No completed days in the last 2 months.</p></div>`}
+      <p class="att-note">Only the last 2 months are shown here. Your overtime balance and earned leaves are saved permanently.</p>
     </div>
     <div id="otEarned" hidden>
       <div class="list">${m.earned.slice().reverse().map(earnedRow).join("") || `<p class="empty-note">No extra or cut leaves yet.</p>`}</div>
