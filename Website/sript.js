@@ -1204,7 +1204,7 @@ function attModel(emp){
   // Overtime history: sirf aakhri 2 haftay (server "Overtime History" tab, warna yahin se)
   const histFrom = addDays(weekStart(today), -7 * (OT_HISTORY_WEEKS - 1));
   const otHistory = srv && Array.isArray(srv.history)
-    ? srv.history.map(h => ({ d: parseDate(h.date), work: num(h.work), required: num(h.required), ot: num(h.ot), short: num(h.short) })).filter(h => h.d)
+    ? srv.history.map(h => ({ d: parseDate(h.date), work: num(h.work), required: num(h.required), ot: num(h.ot), short: num(h.short), adj: !!h.adj, note: h.note || "" })).filter(h => h.d)
     : days.filter(x => x.final && !x.preStart && x.d >= histFrom).map(x => ({ d: x.d, work: x.work, required: x.required, ot: x.ot, short: x.short }));
 
   const m = { days, byKey, recs, leaveMap, months, earned, rewards, cuts, otHistory, first, today,
@@ -1244,11 +1244,12 @@ function sumPanel(t, admin){
 }
 
 /* Break aur Namaz — alag saaf boxes */
-function breakNamaz(brk, namaz, days, single){
+function breakNamaz(brk, namaz, days, single, grace){
   const avg = v => !single && days ? `<small class="bn-sub">avg ${fmtMin(v / days)} / day</small>` : "";
   const over = !single ? ""
-    : brk > ATT.ALLOWED_BREAK + ATT.GRACE ? `<small class="bn-sub neg">${fmtMin(brk - ATT.ALLOWED_BREAK)} over ${fmtMin(ATT.ALLOWED_BREAK)} allowed</small>`
-    : brk > ATT.ALLOWED_BREAK ? `<small class="bn-sub">counted as ${fmtMin(ATT.ALLOWED_BREAK)} (${ATT.GRACE}m grace)</small>`
+    // grace sirf tab jab server ne di ho (wapsi 1h 10m ke andar, clock minute se) — warna poora break kat-ta hai
+    : brk > ATT.ALLOWED_BREAK && grace >= 1 ? `<small class="bn-sub">counted as ${fmtMin(ATT.ALLOWED_BREAK)} (${ATT.GRACE}m grace)</small>`
+    : brk > ATT.ALLOWED_BREAK ? `<small class="bn-sub neg">${fmtMin(brk - ATT.ALLOWED_BREAK)} over ${fmtMin(ATT.ALLOWED_BREAK)} allowed — no grace (back after ${fmtMin(ATT.ALLOWED_BREAK + ATT.GRACE)})</small>`
     : `<small class="bn-sub">${fmtMin(ATT.ALLOWED_BREAK)} allowed</small>`;
   return `
     <div class="bn2">
@@ -1342,10 +1343,10 @@ function progressRing(pct, color, centerTop, centerSub){
 /* Break ki line: 1h allowed + (agar grace se zyada) extra break alag saaf line mein */
 function breakRows(t, rows, label){
   if(!t.brk) return;
-  const extra = !(t.breakGrace >= 1) && t.brk > ATT.ALLOWED_BREAK + ATT.GRACE ? t.brk - ATT.ALLOWED_BREAK : 0;
+  const extra = !(t.breakGrace >= 1) && t.brk >= ATT.ALLOWED_BREAK + 1 ? t.brk - ATT.ALLOWED_BREAK : 0;
   if(extra >= 1){
     rows.push(`<div><span>${label} allowed (${fmtMin(ATT.ALLOWED_BREAK)}) — not counted</span><b>−${fmtMin(ATT.ALLOWED_BREAK)}</b></div>`);
-    rows.push(`<div><span>Extra break (over ${fmtMin(ATT.ALLOWED_BREAK + ATT.GRACE)} limit) — also not counted</span><b class="neg">−${fmtMin(extra)}</b></div>`);
+    rows.push(`<div><span>Extra break (not back within ${fmtMin(ATT.ALLOWED_BREAK + ATT.GRACE)}) — also not counted</span><b class="neg">−${fmtMin(extra)}</b></div>`);
   } else rows.push(`<div><span>${label} (not counted)</span><b>−${fmtMin(t.brk)}</b></div>`);
 }
 
@@ -1444,7 +1445,7 @@ function mountDaily(m, el){
             <div><small>${t.final ? (t.net < 0 ? "Short" : "Overtime") : live ? (liveNet < 0 ? "Short so far" : "Overtime so far") : "Overtime"}</small><b class="${t.preStart ? "muted" : tone(t.final ? t.net : live ? liveNet : 0)}">${t.final ? (t.preStart ? "Not counted" : t.net ? signed(t.net) : "0m") : live ? (liveNet ? signed(liveNet) : "0m") : "—"}</b></div>
           </div>
         </div>
-        ${t.r ? breakNamaz(t.brk, t.namaz, 1, true) : ""}
+        ${t.r ? breakNamaz(t.brk, t.namaz, 1, true, t.breakGrace) : ""}
       </div>
       <div class="sub-h">How this day was calculated</div>
       ${dayCalc(t)}`;
@@ -1535,6 +1536,13 @@ function mountMonthly(m, el, openDay){
 /* ---------- WORKING HOURS · OVERTIME (2-week history + earned leaves) ---------- */
 function otRow(h){
   const net = h.ot - (ATT.SHORT_REDUCES_OVERTIME ? h.short : 0);
+  if(h.adj) return `
+    <div class="arow">
+      <div class="adate"><b>${h.d.getDate()}</b><small>${dayName(h.d)}</small></div>
+      <div class="abody"><div class="amain">Adjustment</div>
+        <div class="asub">${esc(h.note || "Added by admin")}</div></div>
+      <div class="aright"><span class="anet ${tone(net)}">${net ? signed(net) : "0m"}</span><small class="ast">Adjustment</small></div>
+    </div>`;
   return `
     <div class="arow click" data-day="${ymd(h.d)}">
       <div class="adate"><b>${h.d.getDate()}</b><small>${dayName(h.d)}</small></div>
